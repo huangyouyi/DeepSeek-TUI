@@ -56,6 +56,11 @@ interface IosMobileAgentCore {
         string response_json
     );
 
+    [Throws=IosMobileCoreError] string runner_recent_audit_json(
+        string session_id,
+        string response_json
+    );
+
     [Throws=IosMobileCoreError] string runner_maintenance_plan_json(
         string session_id,
         string response_json

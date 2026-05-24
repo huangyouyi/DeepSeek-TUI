@@ -15,6 +15,14 @@ struct ApprovalSheet: View {
 
                 RiskBanner(risk: command.risk)
 
+                Label(command.lease.executionConstraintSummary, systemImage: "lock.shield")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.accentColor.opacity(0.10))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Command")
                         .font(.caption.weight(.semibold))
@@ -40,7 +48,7 @@ struct ApprovalSheet: View {
                     DetailRow(label: "expires", value: command.lease.expirySummary, systemImage: "clock")
                     DetailRow(
                         label: "approved action",
-                        value: command.lease.approvedActionSummary,
+                        value: command.lease.boundActionSummary,
                         systemImage: "doc.text"
                     )
                     DetailRow(
@@ -72,9 +80,10 @@ struct ApprovalSheet: View {
                         bridge.decide(commandID: command.id, decision: .approved)
                         dismiss()
                     } label: {
-                        Label(approveLabel, systemImage: "checkmark")
+                        Label(approveLabel, systemImage: "checkmark.seal")
                             .frame(maxWidth: .infinity)
                     }
+                    .accessibilityHint(command.lease.approvalButtonSummary)
                     .buttonStyle(.borderedProminent)
                     .tint(command.risk == .high ? .red : .accentColor)
                 }
@@ -93,7 +102,7 @@ struct ApprovalSheet: View {
     }
 
     private var approveLabel: String {
-        command.risk == .high ? "Approve High Risk" : "Approve"
+        command.risk == .high ? "Approve High Risk Once" : "Approve Once"
     }
 }
 

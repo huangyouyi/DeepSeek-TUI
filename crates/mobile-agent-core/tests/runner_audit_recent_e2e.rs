@@ -158,3 +158,126 @@ fn pulls_runner_recent_audit_and_merges_maintenance_browser_and_tool_entries_wit
     assert!(!rendered.contains(raw_nonce));
     assert!(!rendered.contains(bearer_token));
 }
+
+#[test]
+fn merges_runner_recent_command_lease_lifecycle_without_leaking_sensitive_fields() {
+    let mut audit = AuditLog::default();
+    audit
+        .append_runner_recent_audit_body(
+            "mobile-session-lease",
+            &json!({
+                "audit": [
+                    {
+                        "event": "shell.command_lease",
+                        "status": "accepted",
+                        "lease": {
+                            "id": "lease-id-secret",
+                            "label": "command_lease",
+                            "status": "accepted",
+                            "idempotency_key": "idem-secret"
+                        },
+                        "metadata": {
+                            "call_id": "lease-valid",
+                            "tool": "remote.shell.exec",
+                            "token": "runner-token-secret",
+                            "command": "echo command-secret",
+                            "env": {
+                                "SAFE_ENV": "env-secret-value"
+                            }
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "consumed",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "consumed"
+                        },
+                        "metadata": {
+                            "call_id": "lease-valid",
+                            "tool": "remote.shell.exec"
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "replay_rejected",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "replayed"
+                        },
+                        "metadata": {
+                            "call_id": "lease-replay",
+                            "tool": "remote.shell.exec",
+                            "error_code": "approval_replayed"
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "expired_rejected",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "expired"
+                        },
+                        "metadata": {
+                            "call_id": "lease-expired",
+                            "tool": "remote.shell.exec",
+                            "error_code": "approval_expired"
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "invalid_action_rejected",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "invalid_action"
+                        },
+                        "metadata": {
+                            "call_id": "lease-invalid",
+                            "tool": "remote.shell.exec",
+                            "error_code": "approval_required"
+                        }
+                    }
+                ]
+            }),
+        )
+        .expect("runner audit/recent command lease events should parse");
+
+    let entries = audit.entries();
+    assert_eq!(entries.len(), 5);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.kind.as_str(), entry.action.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("runner_command_lease", "accepted"),
+            ("runner_command_lease", "consumed"),
+            ("runner_command_lease", "replay_rejected"),
+            ("runner_command_lease", "expired_rejected"),
+            ("runner_command_lease", "invalid_action_rejected"),
+        ]
+    );
+    assert_eq!(entries[0].call_id.as_deref(), Some("lease-valid"));
+    assert_eq!(entries[2].call_id.as_deref(), Some("lease-replay"));
+    assert!(entries[0].detail.contains("remote.shell.exec"));
+    assert!(entries[2].detail.contains("approval_replayed"));
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.session_id.as_deref() == Some("mobile-session-lease"))
+    );
+
+    let rendered = serde_json::to_string(&audit).expect("lease audit should serialize");
+    assert!(rendered.contains("shell.command_lease"));
+    assert!(rendered.contains("accepted"));
+    assert!(rendered.contains("consumed"));
+    assert!(rendered.contains("replay_rejected"));
+    assert!(rendered.contains("expired_rejected"));
+    assert!(rendered.contains("invalid_action_rejected"));
+    assert!(!rendered.contains("lease-id-secret"));
+    assert!(!rendered.contains("idem-secret"));
+    assert!(!rendered.contains("runner-token-secret"));
+    assert!(!rendered.contains("command-secret"));
+    assert!(!rendered.contains("env-secret-value"));
+    assert!(!rendered.contains("SAFE_ENV"));
+}

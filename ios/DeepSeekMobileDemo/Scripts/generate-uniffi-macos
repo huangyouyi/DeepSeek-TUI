@@ -6,13 +6,23 @@ package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 repo_root=$(CDPATH= cd -- "$package_dir/../.." && pwd)
 
 crate_dir="$repo_root/crates/mobile-agent-core"
-generated_dir="$package_dir/Generated"
-artifacts_dir="$package_dir/Artifacts"
+handoff_root=${DEEPSEEK_UNIFFI_HANDOFF_ROOT:-"$package_dir"}
+artifact_root=${DEEPSEEK_UNIFFI_ARTIFACT_ROOT:-"$crate_dir/target/uniffi-swift"}
+generated_dir="$handoff_root/Generated"
+artifacts_dir="$handoff_root/Artifacts"
 headers_dir="$artifacts_dir/Headers"
 modulemap_path="$generated_dir/deepseek_mobile_agent_coreFFI.modulemap"
 swift_path="$generated_dir/DeepSeekMobileAgentCore.swift"
 staticlib_path="$artifacts_dir/libdeepseek_mobile_agent_core.a"
 xcframework_path="$artifacts_dir/DeepSeekMobileAgentCore.xcframework"
+source_swift_path="$artifact_root/DeepSeekMobileAgentCore.swift"
+source_generated_swift_path="$artifact_root/Generated/DeepSeekMobileAgentCore.swift"
+source_modulemap_path="$artifact_root/deepseek_mobile_agent_coreFFI.modulemap"
+source_generated_modulemap_path="$artifact_root/Generated/deepseek_mobile_agent_coreFFI.modulemap"
+source_staticlib_path="$artifact_root/libdeepseek_mobile_agent_core.a"
+source_artifacts_staticlib_path="$artifact_root/Artifacts/libdeepseek_mobile_agent_core.a"
+source_xcframework_path="$artifact_root/DeepSeekMobileAgentCore.xcframework"
+source_artifacts_xcframework_path="$artifact_root/Artifacts/DeepSeekMobileAgentCore.xcframework"
 
 crate_name="deepseek-mobile-agent-core"
 lib_name="deepseek_mobile_agent_core"
@@ -24,7 +34,7 @@ package_xcframework=0
 
 usage() {
   cat <<'EOF'
-usage: ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos [--check-plan] [--check-artifacts] [--xcframework]
+usage: ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos [--check-plan] [--check-artifacts] [--install-artifacts] [--xcframework]
 
 Scaffolds the future macOS-only UniFFI handoff for DeepSeekMobileDemo:
   - generate Swift UniFFI bindings into ios/DeepSeekMobileDemo/Generated
@@ -36,16 +46,29 @@ Linux usage:
   sh -n ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos
   ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-plan
   ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-artifacts
+  ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --install-artifacts
 
 Modes:
   --check-plan       Validate UDL, crate metadata, and documented handoff paths
                      without requiring generated artifacts.
   --check-artifacts  Validate the same plan and require generated Swift,
                      modulemap, and Rust staticlib or xcframework outputs.
+  --install-artifacts
+                     Copy generated artifacts from DEEPSEEK_UNIFFI_ARTIFACT_ROOT
+                     into the iOS handoff layout, then validate them. The source
+                     root may contain files directly or in Generated/ and
+                     Artifacts/ subdirs.
 
 Environment:
   DEEPSEEK_UNIFFI_SOURCE  UniFFI UDL/component source path.
                           Default: crates/mobile-agent-core/src/uniffi_api.udl
+  DEEPSEEK_UNIFFI_ARTIFACT_ROOT
+                          Source root for --install-artifacts.
+                          Default: crates/mobile-agent-core/target/uniffi-swift
+  DEEPSEEK_UNIFFI_HANDOFF_ROOT
+                          Override the handoff root containing Generated/ and
+                          Artifacts/ for Linux mock artifact checks.
+                          Default: ios/DeepSeekMobileDemo
   UNIFFI_BINDGEN          UniFFI binding generator command.
                           Default: uniffi-bindgen
 EOF
@@ -58,6 +81,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --check-artifacts)
       mode="artifacts"
+      ;;
+    --install-artifacts)
+      mode="install"
       ;;
     --xcframework)
       package_xcframework=1
@@ -89,6 +115,56 @@ require_artifact_file() {
   fi
 }
 
+select_source_file() {
+  first=$1
+  second=$2
+  label=$3
+
+  if [ -f "$first" ]; then
+    printf '%s\n' "$first"
+    return 0
+  fi
+
+  if [ -f "$second" ]; then
+    printf '%s\n' "$second"
+    return 0
+  fi
+
+  printf '%s\n' "error: missing source $label artifact:"
+  printf '%s\n' "  $first"
+  printf '%s\n' "  or $second"
+  exit 1
+}
+
+select_source_rust_artifact() {
+  if [ -f "$source_staticlib_path" ]; then
+    printf '%s\n' "staticlib:$source_staticlib_path"
+    return 0
+  fi
+
+  if [ -f "$source_artifacts_staticlib_path" ]; then
+    printf '%s\n' "staticlib:$source_artifacts_staticlib_path"
+    return 0
+  fi
+
+  if [ -d "$source_xcframework_path" ]; then
+    printf '%s\n' "xcframework:$source_xcframework_path"
+    return 0
+  fi
+
+  if [ -d "$source_artifacts_xcframework_path" ]; then
+    printf '%s\n' "xcframework:$source_artifacts_xcframework_path"
+    return 0
+  fi
+
+  printf '%s\n' "error: missing source Rust handoff artifact:"
+  printf '%s\n' "  $source_staticlib_path"
+  printf '%s\n' "  or $source_artifacts_staticlib_path"
+  printf '%s\n' "  or $source_xcframework_path"
+  printf '%s\n' "  or $source_artifacts_xcframework_path"
+  exit 1
+}
+
 require_staticlib_or_xcframework() {
   if [ -f "$staticlib_path" ]; then
     return 0
@@ -102,6 +178,28 @@ require_staticlib_or_xcframework() {
   printf '%s\n' "  $staticlib_path"
   printf '%s\n' "  or $xcframework_path"
   return 1
+}
+
+install_handoff_artifacts() {
+  swift_source=$(select_source_file "$source_swift_path" "$source_generated_swift_path" "Swift")
+  modulemap_source=$(select_source_file "$source_modulemap_path" "$source_generated_modulemap_path" "modulemap")
+  rust_source=$(select_source_rust_artifact)
+
+  mkdir -p "$generated_dir" "$artifacts_dir"
+  cp "$swift_source" "$swift_path"
+  cp "$modulemap_source" "$modulemap_path"
+
+  case "$rust_source" in
+    staticlib:*)
+      rm -rf "$xcframework_path"
+      cp "${rust_source#staticlib:}" "$staticlib_path"
+      ;;
+    xcframework:*)
+      rm -f "$staticlib_path"
+      rm -rf "$xcframework_path"
+      cp -R "${rust_source#xcframework:}" "$xcframework_path"
+      ;;
+  esac
 }
 
 describe_layout() {
@@ -170,6 +268,17 @@ if [ "$mode" = "artifacts" ]; then
   require_artifact_file "$modulemap_path"
   require_staticlib_or_xcframework
   printf '%s\n' "Generated UniFFI handoff artifacts are present."
+  exit 0
+fi
+
+if [ "$mode" = "install" ]; then
+  check_layout_inputs
+  describe_layout
+  install_handoff_artifacts
+  require_artifact_file "$swift_path"
+  require_artifact_file "$modulemap_path"
+  require_staticlib_or_xcframework
+  printf '%s\n' "Generated UniFFI handoff artifacts installed."
   exit 0
 fi
 

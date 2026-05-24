@@ -228,6 +228,8 @@ pub struct BrowserClickRequest {
     pub label: Option<String>,
     pub action: String,
     pub metadata: Option<Value>,
+    pub idempotency_key: Option<String>,
+    pub approval_nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,6 +239,8 @@ pub struct BrowserClickApproval {
     pub label: Option<String>,
     pub action: String,
     pub metadata: Option<Value>,
+    pub idempotency_key: Option<String>,
+    pub approval_nonce: Option<String>,
     pub risk: String,
 }
 
@@ -249,6 +253,8 @@ impl BrowserClickApproval {
             label: request.label,
             action: request.action,
             metadata: request.metadata,
+            idempotency_key: request.idempotency_key,
+            approval_nonce: request.approval_nonce,
             risk: "state_changing".to_string(),
         }
     }
@@ -1668,6 +1674,7 @@ struct FileWriteArguments {
     #[serde(default)]
     mode: FileWriteMode,
     backup: Option<bool>,
+    idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1703,6 +1710,8 @@ struct BrowserClickArguments {
     label: Option<String>,
     action: Option<String>,
     metadata: Option<Value>,
+    idempotency_key: Option<String>,
+    approval_nonce: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2364,6 +2373,8 @@ fn write_file_in_workspace(workspace: &Path, arguments: Value) -> Result<Value, 
             code: "invalid_arguments",
             message: format!("invalid file write arguments: {error}"),
         })?;
+    let idempotency_key =
+        optional_non_empty(arguments.idempotency_key.as_deref(), "idempotency_key")?;
 
     let relative_path = validate_workspace_relative_path(&arguments.path)?;
     let target = workspace.join(&relative_path);
@@ -2439,12 +2450,17 @@ fn write_file_in_workspace(workspace: &Path, arguments: Value) -> Result<Value, 
         }
     }
 
-    Ok(json!({
+    let mut data = json!({
         "path": arguments.path,
         "mode": arguments.mode.as_str(),
         "bytes_written": arguments.content.len(),
         "backup_path": backup_path,
-    }))
+    });
+    if let Some(idempotency_key) = idempotency_key {
+        data["idempotency_key"] = json!(idempotency_key);
+    }
+
+    Ok(data)
 }
 
 fn browser_tool(call: RemoteToolCall) -> RemoteToolOutput {
@@ -2668,6 +2684,11 @@ fn browser_click_approval(
         label,
         action,
         metadata: arguments.metadata,
+        idempotency_key: optional_non_empty(
+            arguments.idempotency_key.as_deref(),
+            "idempotency_key",
+        )?,
+        approval_nonce: optional_non_empty(arguments.approval_nonce.as_deref(), "approval_nonce")?,
     })
 }
 
@@ -2741,6 +2762,18 @@ fn browser_click_approval_data(approval: BrowserClickApproval) -> Value {
     }
     if let Some(metadata) = approval.metadata {
         data["metadata"] = metadata;
+    }
+    if let Some(idempotency_key) = approval.idempotency_key {
+        data["idempotency_key"] = json!(idempotency_key);
+    }
+    if approval.approval_nonce.is_some() {
+        data["approval"] = json!({
+            "nonce": {
+                "label": "approval_nonce",
+                "status": "provided",
+                "redacted": true
+            }
+        });
     }
 
     let mut audit = json!({

@@ -170,6 +170,163 @@ fn runner_maintenance_audit_json_parses_response_without_leaking_secrets() {
 }
 
 #[test]
+fn runner_recent_audit_json_matches_ios_command_lease_timeline_contract_without_leaking_secrets() {
+    let core = IosMobileAgentCore::new();
+    let audit_json = core
+        .runner_recent_audit_json(
+            "session-lease".to_string(),
+            json!({
+                "audit": [
+                    {
+                        "event": "shell.command_lease",
+                        "status": "accepted",
+                        "lease": {
+                            "id": "lease-secret",
+                            "label": "command_lease",
+                            "status": "accepted",
+                            "idempotency_key": "idem-secret"
+                        },
+                        "metadata": {
+                            "call_id": "lease-call",
+                            "tool": "remote.shell.exec",
+                            "token": "runner-token-secret",
+                            "command": "echo command-secret",
+                            "env": {
+                                "SAFE_ENV": "env-secret-value"
+                            }
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "consumed",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "consumed",
+                            "id": "lease-consumed-secret"
+                        },
+                        "metadata": {
+                            "call_id": "lease-consumed",
+                            "tool": "remote.shell.exec",
+                            "command": "rm consumed-secret"
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "replay_rejected",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "replayed"
+                        },
+                        "metadata": {
+                            "call_id": "lease-replay",
+                            "tool": "remote.shell.exec",
+                            "error_code": "approval_replayed"
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "expired_rejected",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "expired"
+                        },
+                        "metadata": {
+                            "call_id": "lease-expired",
+                            "tool": "remote.shell.exec",
+                            "error_code": "approval_expired",
+                            "authorization": "Bearer expired-token-secret"
+                        }
+                    },
+                    {
+                        "event": "shell.command_lease",
+                        "status": "invalid_action_rejected",
+                        "lease": {
+                            "label": "command_lease",
+                            "status": "invalid_action"
+                        },
+                        "metadata": {
+                            "call_id": "lease-invalid",
+                            "tool": "remote.shell.exec",
+                            "error_code": "approval_required",
+                            "env": {
+                                "SECRET_ENV": "invalid-env-secret"
+                            }
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("recent audit should serialize");
+
+    let audit: Value = serde_json::from_str(&audit_json).expect("audit should be JSON");
+    let entries = audit["audit_entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 5);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (
+                entry["kind"].as_str().unwrap(),
+                entry["action"].as_str().unwrap(),
+                entry["summary"].as_str().unwrap(),
+                entry["call_id"].as_str().unwrap(),
+                entry["detail"].as_str().unwrap(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "runner_command_lease",
+                "accepted",
+                "command lease accepted",
+                "lease-call",
+                "lease accepted call_id=lease-call tool=remote.shell.exec",
+            ),
+            (
+                "runner_command_lease",
+                "consumed",
+                "command lease consumed",
+                "lease-consumed",
+                "lease consumed call_id=lease-consumed tool=remote.shell.exec",
+            ),
+            (
+                "runner_command_lease",
+                "replay_rejected",
+                "command lease replay_rejected",
+                "lease-replay",
+                "lease replay rejected call_id=lease-replay tool=remote.shell.exec error_code=approval_replayed",
+            ),
+            (
+                "runner_command_lease",
+                "expired_rejected",
+                "command lease expired_rejected",
+                "lease-expired",
+                "lease expired rejected call_id=lease-expired tool=remote.shell.exec error_code=approval_expired",
+            ),
+            (
+                "runner_command_lease",
+                "invalid_action_rejected",
+                "command lease invalid_action_rejected",
+                "lease-invalid",
+                "lease invalid rejected call_id=lease-invalid tool=remote.shell.exec error_code=approval_required",
+            ),
+        ]
+    );
+    assert!(!audit_json.contains("lease-secret"));
+    assert!(!audit_json.contains("lease-consumed-secret"));
+    assert!(!audit_json.contains("idem-secret"));
+    assert!(!audit_json.contains("runner-token-secret"));
+    assert!(!audit_json.contains("expired-token-secret"));
+    assert!(!audit_json.contains("command-secret"));
+    assert!(!audit_json.contains("consumed-secret"));
+    assert!(!audit_json.contains("env-secret-value"));
+    assert!(!audit_json.contains("invalid-env-secret"));
+    assert!(!audit_json.contains("SAFE_ENV"));
+    assert!(!audit_json.contains("SECRET_ENV"));
+    assert!(!audit_json.contains("lease_label"));
+    assert!(!audit_json.contains("idempotency_key"));
+}
+
+#[test]
 fn runner_maintenance_plan_json_exposes_artifact_verification_without_leaking_secrets() {
     let core = IosMobileAgentCore::new();
     let bearer_token = "runner-plan-token-secret";

@@ -7,8 +7,9 @@ use deepseek_mobile_agent_core::transport::{
 };
 use kai_runner::server::{build_router_with_shell_runner_and_token, build_router_with_token};
 use kai_runner::{
-    KaiRunner, ShellApprovalNonceManager, ShellExecutionRequest, ShellExecutionResult,
-    ShellExecutor,
+    CommandLeaseAction as RunnerCommandLeaseAction,
+    CommandLeaseEnvelope as RunnerCommandLeaseEnvelope, KaiRunner, ShellApprovalNonceManager,
+    ShellExecutionPolicy, ShellExecutionRequest, ShellExecutionResult, ShellExecutor,
 };
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -53,10 +54,22 @@ impl LiveRunnerServer {
     }
 
     async fn start_shell_with_managed_approvals(token: &str) -> Self {
+        Self::start_shell_with_approval_manager(token, ShellApprovalNonceManager::new()).await
+    }
+
+    async fn start_shell_with_approval_manager(
+        token: &str,
+        approval_manager: ShellApprovalNonceManager,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let runner = KaiRunner::with_shell_executor(NoopShellExecutor)
-            .with_approval_nonce_manager(ShellApprovalNonceManager::new());
+            .with_approval_nonce_manager(approval_manager)
+            .with_shell_execution_policy(
+                ShellExecutionPolicy::default()
+                    .with_cwd_roots(["/tmp"])
+                    .with_allowed_env_keys(["AUDIT_LEASE_ENV_SECRET"]),
+            );
         let router = build_router_with_shell_runner_and_token(runner, token);
         let task = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -245,4 +258,106 @@ async fn mobile_core_client_consumes_maintenance_approval_nonce_and_reads_redact
     assert!(!audit_text.contains("Bearer"));
     assert!(!audit_text.contains("audit-only-secret-must-not-leak"));
     assert!(!format!("{transport:?}").contains(MAINTENANCE_RUNNER_TOKEN));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mobile_core_client_reads_redacted_command_lease_lifecycle_from_runner_audit() {
+    let approval_manager = ShellApprovalNonceManager::new();
+    let command = "printf audit-lease-command-secret";
+    let lease = RunnerCommandLeaseEnvelope::new(
+        "lease-live-secret-id",
+        "idem-live-secret-key",
+        RunnerCommandLeaseAction::new("remote.shell.exec", command, Some("/tmp")),
+    );
+    approval_manager.create_lease(lease.clone(), None);
+
+    let server =
+        LiveRunnerServer::start_shell_with_approval_manager(RUNNER_TOKEN, approval_manager).await;
+    let endpoint = server.endpoint();
+    let backend = RunnerTcpHttpBackend::with_timeout(Duration::from_secs(5));
+    let transport = RunnerHttpTransport::with_bearer_token(endpoint.clone(), RUNNER_TOKEN);
+    let mut client = RunnerHttpClient::new(transport.clone(), backend);
+
+    let mut nonce_backend = RunnerTcpHttpBackend::with_timeout(Duration::from_secs(5));
+    let nonce_response = nonce_backend
+        .execute(approval_nonce_request(&endpoint, RUNNER_TOKEN))
+        .unwrap()
+        .into_success_json()
+        .unwrap();
+    let nonce = nonce_response["approval_nonce"]
+        .as_str()
+        .expect("runner should issue an approval nonce");
+
+    let lease_value = serde_json::to_value(&lease).expect("lease should serialize");
+    let approved_call = RemoteToolCall {
+        call_id: "mobile-core-live-lease-approved".to_string(),
+        name: RemoteToolName::ShellExec,
+        arguments: json!({
+            "command": command,
+            "cwd": "/tmp",
+            "env": {
+                "AUDIT_LEASE_ENV_SECRET": "must-not-leak"
+            },
+            "idempotency_key": "idem-live-secret-key",
+            "lease": lease_value
+        }),
+    };
+
+    let first = client.execute_tool_call(approved_call.clone()).unwrap();
+    assert_eq!(first.call_id, "mobile-core-live-lease-approved");
+    assert_eq!(first.success, true);
+    assert_eq!(first.result["tool"], json!("remote.shell.exec"));
+    assert_eq!(first.result["status"], json!("ok"));
+
+    let replay = client
+        .execute_tool_call(RemoteToolCall {
+            call_id: "mobile-core-live-lease-replay".to_string(),
+            ..approved_call
+        })
+        .unwrap();
+    assert_eq!(replay.call_id, "mobile-core-live-lease-replay");
+    assert_eq!(replay.success, false);
+    assert_eq!(replay.result["error"]["code"], json!("approval_replayed"));
+
+    let recent = client.fetch_recent_audit().unwrap();
+    let audit = recent["audit"]
+        .as_array()
+        .expect("recent audit should include an audit array");
+    let audit_text = recent["audit"].to_string();
+
+    assert_eq!(recent["type"], json!("audit_recent"));
+    assert!(audit.iter().any(|event| {
+        event["event"] == json!("maintenance.approval_nonce")
+            && event["status"] == json!("issued")
+            && event["nonce"]["label"] == json!("approval_nonce")
+            && event["nonce"]["status"] == json!("issued")
+    }));
+    assert!(audit.iter().any(|event| {
+        event["event"] == json!("shell.command_lease")
+            && event["status"] == json!("accepted")
+            && event["lease"]["label"] == json!("command_lease")
+            && event["lease"]["status"] == json!("accepted")
+    }));
+    assert!(audit.iter().any(|event| {
+        event["event"] == json!("shell.command_lease")
+            && event["status"] == json!("consumed")
+            && event["lease"]["label"] == json!("command_lease")
+            && event["lease"]["status"] == json!("consumed")
+    }));
+    assert!(audit.iter().any(|event| {
+        event["event"] == json!("shell.command_lease")
+            && event["status"] == json!("replay_rejected")
+            && event["lease"]["label"] == json!("command_lease")
+            && event["lease"]["status"] == json!("replayed")
+            && event["metadata"]["error_code"] == json!("approval_replayed")
+    }));
+    assert!(!audit_text.contains(nonce));
+    assert!(!audit_text.contains(RUNNER_TOKEN));
+    assert!(!audit_text.contains("Bearer"));
+    assert!(!audit_text.contains("lease-live-secret-id"));
+    assert!(!audit_text.contains("idem-live-secret-key"));
+    assert!(!audit_text.contains("audit-lease-command-secret"));
+    assert!(!audit_text.contains("AUDIT_LEASE_ENV_SECRET"));
+    assert!(!audit_text.contains("must-not-leak"));
+    assert!(!format!("{transport:?}").contains(RUNNER_TOKEN));
 }

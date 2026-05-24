@@ -357,8 +357,7 @@ fn audit_recent_records_command_lease_lifecycle_without_raw_secrets() {
     approvals.create_lease(invalid_action_lease.clone(), Some(Duration::from_secs(30)));
 
     let handler = RunnerApiHandler::new_with_shell_runner_and_token(
-        KaiRunner::with_shell_executor(FakeShellExecutor)
-            .with_approval_nonce_manager(approvals),
+        KaiRunner::with_shell_executor(FakeShellExecutor).with_approval_nonce_manager(approvals),
         "lease-audit-bearer-token-secret",
     );
 
@@ -671,6 +670,14 @@ fn audit_recent_redacts_bearer_nonce_and_tool_arguments() {
         recent.body["audit"],
         json!([
             {
+                "event": "maintenance.approval_nonce",
+                "status": "issued",
+                "nonce": {
+                    "label": "approval_nonce",
+                    "status": "issued"
+                }
+            },
+            {
                 "event": "tool_call",
                 "status": "ok",
                 "source": "runner",
@@ -684,7 +691,6 @@ fn audit_recent_redacts_bearer_nonce_and_tool_arguments() {
     assert!(!audit_text.contains("audit-bearer-token-secret"));
     assert!(!audit_text.contains("Bearer"));
     assert!(!audit_text.contains(nonce));
-    assert!(!audit_text.contains("approval_nonce"));
     assert!(!audit_text.contains("echo raw-tool-argument-secret"));
     assert!(!audit_text.contains("nested-tool-argument-secret"));
 }

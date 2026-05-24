@@ -1115,9 +1115,12 @@ Phone-runnable milestone:
 
 1. Execute the real-platform validation checklists in
    `docs/mobile-validation-checklists.md` before changing platform behavior.
-   Capture `evidence-log.md` bundles for macOS, Windows, iOS simulator/device,
-   and LAN runner runs, then update this plan with pass/fail status and exact
-   blockers.
+   Start from the empty skeletons in `docs/mobile-evidence-bundles/templates/`
+   or dry-run `python3 scripts/mobile_evidence_bundle.py --list` and
+   `python3 scripts/mobile_evidence_bundle.py --platform <platform> --dry-run`
+   on Linux. Capture `evidence-log.md` bundles for macOS, Windows, iOS
+   simulator/device, and LAN runner runs, then update this plan with pass/fail
+   status and exact blockers.
 2. Prove the macOS toolchain path on real hardware: run the Swift package tests,
    open `ios/DeepSeekMobileDemo/Package.swift` in Xcode, launch the simulator,
    and record the exact missing project/signing/binding work.
@@ -1259,6 +1262,126 @@ Next T-stage open items:
    behavior.
 5. T10: Feed completed evidence logs back into this plan and convert verified
    blockers into implementation tasks.
+
+### Stage U5: Evidence Result Backfill Template - Complete
+
+Scope: documentation-only addition of result summary tables and plan-backfill
+rules for real platform evidence. This does not claim that any macOS, Windows,
+iOS simulator/device, or LAN runner checklist has passed.
+
+U5 exit status:
+
+- Done: `docs/mobile-validation-checklists.md` now requires every
+  `evidence-log.md` to include a result summary table with pass/fail/blocker
+  status, related milestone, next issue/task, and whether
+  `docs/mobile-porting-plan.md` was updated.
+- Done: platform-specific summary rows are present for macOS host, Windows
+  host, iOS simulator, iOS device, and LAN runner validation logs.
+- Done: this plan records U-stage status separately from the still-open real
+  platform runs, so the template work is complete without implying validation
+  success.
+- Open: no real-platform checklist execution was performed as part of U5.
+- Open: completed evidence summaries still need to be copied back into this
+  plan after each dated validation bundle is collected.
+
+Next U-stage open items:
+
+1. U6: Run the macOS host evidence checklist on real hardware, fill the summary
+   table, and update S6/T6/U6 plus M13/M9 status from the attached evidence.
+2. U7: Run iOS simulator and physical-device evidence checklists, fill summary
+   tables, and update S7/T7/U7 plus M0/M1/M3/M9/M13/M14 status from the
+   attached evidence.
+3. U8: Run LAN runner evidence validation, fill the summary table, and update
+   S8/T8/U8 plus M9/M12 status from bind, health, pairing, auth, diagnose, and
+   approval-required shell evidence.
+4. U9: Run the Windows host evidence checklist, fill the summary table, and
+   update S9/T9/U9 plus M9/M16 status from PowerShell, policy, Event Log, and
+   runner behavior evidence.
+5. U10: Convert verified blockers from the completed summary tables into
+   implementation issues/tasks before changing platform support claims.
+
+### Stage V5: Evidence Bundle Skeletons - Complete
+
+Scope: documentation/script-only skeletons for real-platform evidence bundles.
+This does not execute or claim validation for macOS, Windows, iOS
+simulator/device, or LAN runner behavior.
+
+V5 exit status:
+
+- Done: `docs/mobile-evidence-bundles/README.md` documents the bundle purpose,
+  path convention, redaction expectations, and script usage.
+- Done: tracked empty templates exist for `macos-host`, `windows-host`,
+  `ios-simulator`, `ios-device`, and `lan-runner` under
+  `docs/mobile-evidence-bundles/templates/`.
+- Done: each platform skeleton includes `README.md`, `evidence-log.md`,
+  `environment.md`, `results.md`, `commands.log`, `logs/`, `screenshots/`,
+  and `failures/` placeholders.
+- Done: `scripts/mobile_evidence_bundle.py` supports Linux-safe `--list` and
+  `--dry-run` flows, plus guarded bundle generation for maintainers running
+  real validation outside the tracked template tree.
+- Open: no real-platform evidence was collected as part of V5.
+- Open: completed bundles still need to be copied back into this plan before
+  support claims change.
+
+Next V-stage open items:
+
+1. V6: Generate a dated macOS host bundle from the skeleton, run the macOS
+   checklist on real hardware, and backfill S6/T6/U6/V6 plus M13/M9.
+2. V7: Generate dated iOS simulator and physical-device bundles, run signing,
+   local network, persistence, and UniFFI link checks, and backfill
+   S7/T7/U7/V7 plus M0/M1/M3/M9/M13/M14.
+3. V8: Generate a dated LAN runner bundle, run bind/health/pairing/auth/
+   diagnose/approval-required shell checks, and backfill S8/T8/U8/V8 plus
+   M9/M12.
+4. V9: Generate a dated Windows host bundle, run PowerShell/UAC/PATH/execution
+   policy/Event Log/runner behavior checks, and backfill S9/T9/U9/V9 plus
+   M9/M16.
+5. V10: Convert verified blockers from completed V-stage bundles into
+   implementation tasks before changing platform support claims.
+
+### Stage W: Linux Evidence Harness and Parser - Linux Tooling Complete, Hardware Evidence Open
+
+Scope: documentation status for the Linux-runnable evidence workflow that can
+prepare, inspect, and summarize mobile validation bundles without requiring
+macOS, Xcode, an iOS simulator/device, or a Windows host. This stage does not
+claim real macOS, iOS, or Windows validation success.
+
+The Linux-first execution track is maintained separately in
+`docs/linux-first-mobile-task-tree.md`. Treat that document as the priority
+task tree until its Linux completion gate passes; then move to hardware-backed
+macOS, iOS, LAN runner, and Windows evidence bundles.
+
+W-stage status:
+
+- W1 Linux LAN runner evidence harness: `scripts/mobile_lan_runner_evidence.py`
+  can prepare a LAN-runner evidence bundle and command checklist for
+  loopback/local runner validation. The harness is evidence collection support
+  only; it must not be treated as proof that a real LAN runner has passed on
+  macOS, iOS, or Windows hardware.
+- W2 evidence bundle directory parser: `scripts/mobile_evidence_plan_draft.py`
+  accepts completed `evidence-log.md` files and evidence bundle directories,
+  then prints a reviewable markdown draft instead of mutating this plan
+  automatically.
+- W3 Linux validation entrypoint: `scripts/mobile_linux_validation.py` groups
+  the bundle smoke, plan-draft parser smoke, LAN-runner harness smoke, and
+  Linux-safe shell-plan checks. It is a preflight gate for evidence tooling, not
+  a substitute for real device validation.
+- W4 real macOS/iOS/Windows evidence remains blocked by hardware: S6/S7/S9,
+  T6/T7/T9, U6/U7/U9, and V6/V7/V9 stay open until maintainers run the
+  checklists on real macOS/Xcode/iOS/Windows environments and copy the
+  resulting evidence back into this plan.
+
+W-stage exit requirements:
+
+1. W1: Run the LAN runner harness with `--host <host> --dry-run` before
+   generating any local LAN-runner evidence bundle.
+2. W2: Run the plan-draft parser with `--source <bundle-dir>` and review the
+   generated draft before copying status changes into this plan.
+3. W3: Run `python3 scripts/mobile_linux_validation.py --dry-run` to inspect
+   the Linux-safe validation entrypoint, then run it without `--dry-run` when
+   the local scripts are ready.
+4. W4: Leave real macOS, iOS simulator/device, and Windows claims unchanged
+   until hardware-backed bundles exist.
 
 ### Stage 2: Real Rust Bridge
 
@@ -1414,13 +1537,47 @@ Mobile Porting Program
 │  ├─ [open] S11. Real UniFFI generation and Swift link from `crates/mobile-agent-core/src/uniffi_api.udl`
 │  └─ [open] S12. Real browser engine behind `BrowserEngine` with approval-bound click/extract flows
 │
-└─ T. Evidence-backed platform validation
-   ├─ [done] T5. Add fillable evidence log templates for macOS, Windows, iOS simulator/device, and LAN runner validation
-   ├─ [open] T6. Real Mac evidence run: completed `evidence-log.md`, command logs, screenshots, `.xcresult`, and runner bootstrap notes
-   ├─ [open] T7. Real iOS simulator/device evidence run: signing, Keychain, SQLite sandbox, local network permission, and UniFFI link status
-   ├─ [open] T8. Real LAN runner evidence run: bind, health, pairing, capabilities, auth rejection, diagnose, and approval-required shell path
-   ├─ [open] T9. Real Windows evidence run: PowerShell, UAC, PATH, execution policy, Event Log, and runner host behavior
-   └─ [open] T10. Feed completed evidence logs back into this plan and convert verified blockers into implementation tasks
+├─ T. Evidence-backed platform validation
+│  ├─ [done] T1. Mobile core can shape command lease metadata into runner HTTP tool-call requests
+│  ├─ [done] T2. iOS approval surfaces display lease/idempotency/expiry/action metadata, explicit one-time-before-expiry copy, and no bearer/pairing token or command secret text
+│  ├─ [done] T3. Runner audit records command lease lifecycle events without leaking command secrets, env secrets, or bearer tokens
+│  ├─ [done] T4. UniFFI handoff scripts now distinguish plan checks from generated artifact checks
+│  ├─ [done] T5. Add fillable evidence log templates for macOS, Windows, iOS simulator/device, and LAN runner validation
+│  ├─ [open] T6. Real Mac evidence run: completed `evidence-log.md`, command logs, screenshots, `.xcresult`, and runner bootstrap notes
+│  ├─ [open] T7. Real iOS simulator/device evidence run: signing, Keychain, SQLite sandbox, local network permission, and UniFFI link status
+│  ├─ [open] T8. Real LAN runner evidence run: bind, health, pairing, capabilities, auth rejection, diagnose, and approval-required shell path
+│  ├─ [open] T9. Real Windows evidence run: PowerShell, UAC, PATH, execution policy, Event Log, and runner host behavior
+│  └─ [open] T10. Feed completed evidence logs back into this plan and convert verified blockers into implementation tasks
+│
+├─ U. Evidence result summary backfill
+│  ├─ [done] U1. Mobile core parses runner `shell.command_lease` audit lifecycle events into redacted mobile audit entries
+│  ├─ [done] U2. iOS audit timeline displays nonce and command lease lifecycle metadata from a safe whitelist
+│  ├─ [done] U3. iOS approval UX states command leases are one-time approvals that expire before execution
+│  ├─ [done] U4. UniFFI artifact handoff scripts support mock success-path artifact checks without Swift/Xcode
+│  ├─ [done] U5. Add evidence result summary tables and plan-backfill status fields
+│  ├─ [open] U6. Backfill macOS host evidence summary into S6/T6/U6 and related milestones
+│  ├─ [open] U7. Backfill iOS simulator/device evidence summary into S7/T7/U7 and related milestones
+│  ├─ [open] U8. Backfill LAN runner evidence summary into S8/T8/U8 and related milestones
+│  ├─ [open] U9. Backfill Windows host evidence summary into S9/T9/U9 and related milestones
+│  └─ [open] U10. Convert verified summary blockers into implementation issues/tasks before support-claim changes
+│
+├─ V. Evidence bundle skeletons
+│  ├─ [done] V1. Evidence summary parser can produce plan update drafts without mutating the plan
+│  ├─ [done] V2. Mobile-core `runner_command_lease` audit JSON is normalized for the iOS timeline contract
+│  ├─ [done] V3. Live local runner E2E covers command lease audit lifecycle and redaction
+│  ├─ [done] V4. UniFFI handoff scripts can install mock artifacts into the expected iOS layout
+│  ├─ [done] V5. Add tracked empty evidence bundle skeletons and Linux dry-run/list script
+│  ├─ [open] V6. Generate and complete a macOS host evidence bundle on real hardware
+│  ├─ [open] V7. Generate and complete iOS simulator/device evidence bundles
+│  ├─ [open] V8. Generate and complete a LAN runner evidence bundle
+│  ├─ [open] V9. Generate and complete a Windows host evidence bundle
+│  └─ [open] V10. Convert verified V-stage blockers into implementation issues/tasks
+│
+└─ W. Linux evidence tooling and hardware-blocked platform evidence
+   ├─ [done] W1. Linux LAN runner evidence harness prepares local evidence bundles, but does not prove real LAN runner hardware behavior
+   ├─ [done] W2. Evidence bundle directory parser produces reviewable plan-update drafts without mutating the plan
+   ├─ [done] W3. Linux validation entrypoint groups bundle, parser, and LAN-runner evidence-tooling checks
+   └─ [open] W4. Real macOS/iOS/Windows evidence remains blocked until hardware-backed bundles are collected
 ```
 
 ## Mobile-Runnable Milestones

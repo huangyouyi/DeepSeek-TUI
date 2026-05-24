@@ -84,6 +84,18 @@ struct CommandLeaseApproval: Hashable {
         Self.expiryFormatter.string(from: expiresAt)
     }
 
+    var executionConstraintSummary: String {
+        "This approval allows this action to execute once before \(expirySummary)."
+    }
+
+    var approvalButtonSummary: String {
+        "Approve once before \(expirySummary)"
+    }
+
+    var boundActionSummary: String {
+        "One-time action: \(approvedActionSummary)"
+    }
+
     private static let expiryFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -640,6 +652,8 @@ struct AuditTimelineEntry: Identifiable, Hashable {
     var risk: CommandRisk
     var userAction: String
     var runnerAuditSummary: String
+    var leaseLifecycleLabel: String?
+    var commandLeaseMetadata: String
 
     var id: UUID { event.id }
     var timestamp: Date { event.timestamp }
@@ -653,6 +667,8 @@ struct AuditTimelineEntry: Identifiable, Hashable {
         risk = Self.risk(for: event)
         userAction = Self.userAction(for: event)
         runnerAuditSummary = Self.redactedSummary(for: event)
+        leaseLifecycleLabel = Self.leaseLifecycleLabel(for: event)
+        commandLeaseMetadata = Self.commandLeaseMetadata(for: event)
     }
 
     private static func source(for event: AuditEvent) -> String {
@@ -681,13 +697,13 @@ struct AuditTimelineEntry: Identifiable, Hashable {
         if text.contains("denied") || text.contains("rejected") {
             return "Denied"
         }
-        if text.contains("approved") || text.contains("redeemed") || text.contains("bound") {
+        if text.contains("approved") || text.contains("redeemed") || text.contains("bound") || text.contains("lease accepted") || text.contains("lease consumed") {
             return "Approved"
         }
         if text.contains("offline") || text.contains("fallback") || text.contains("rescue") {
             return "Rescue"
         }
-        if text.contains("waiting") || text.contains("pending") || text.contains("planned") {
+        if text.contains("waiting") || text.contains("pending") || text.contains("planned") || text.contains("nonce issued") {
             return "Waiting"
         }
         if text.contains("imported") || text.contains("opened") || text.contains("extracted") || text.contains("loaded") {
@@ -712,6 +728,9 @@ struct AuditTimelineEntry: Identifiable, Hashable {
         if text.contains("denied") || text.contains("rejected") {
             return "Rejected by user"
         }
+        if text.contains("nonce issued") || text.contains("lease accepted") {
+            return "Review required"
+        }
         if text.contains("approved") {
             return "Approved by user"
         }
@@ -729,7 +748,15 @@ struct AuditTimelineEntry: Identifiable, Hashable {
         let redactionPatterns = [
             (#"deepseek-mobile-demo-token-[A-Za-z0-9-]+"#, "redacted token"),
             (#"deepseek-mobile-approval-nonce-[A-Za-z0-9-]+"#, "redacted nonce"),
-            (#"deepseek-mobile-browser-click-nonce-[A-Za-z0-9-]+"#, "redacted browser nonce")
+            (#"deepseek-mobile-browser-click-nonce-[A-Za-z0-9-]+"#, "redacted browser nonce"),
+            (#"Bearer\s+[A-Za-z0-9._~+/\-=]+"#, "bearer redacted"),
+            (#"\bpairing_token\s*=\s*("[^"]*"|'[^']*'|[^\s,;]+)"#, "pairing token redacted"),
+            (#"\blease_id\s*=\s*("[^"]*"|'[^']*'|[^\s,;]+)"#, "lease id redacted"),
+            (#"\blease-[A-Za-z0-9._:-]+"#, "lease-redacted"),
+            (#"\bidempotency_(key|secret)\s*=\s*("[^"]*"|'[^']*'|[^\s,;]+)"#, "idempotency redacted"),
+            (#"\bidem-[A-Za-z0-9._:-]+"#, "idempotency-redacted"),
+            (#"\bcommand\s*=\s*("[^"]*"|'[^']*'|\{[^}]*\}|\[[^\]]*\]|[^\s,;]+)"#, "command redacted"),
+            (#"\benv\s*=\s*("[^"]*"|'[^']*'|\{[^}]*\}|\[[^\]]*\]|[^\s,;]+)"#, "env redacted")
         ]
         for (pattern, redactedValue) in redactionPatterns {
             summary = summary.replacingOccurrences(
@@ -763,6 +790,54 @@ struct AuditTimelineEntry: Identifiable, Hashable {
         }
 
         return summary
+    }
+
+    private static func leaseLifecycleLabel(for event: AuditEvent) -> String? {
+        let text = "\(event.title) \(event.detail)".lowercased()
+        if text.contains("nonce issued") {
+            return "Nonce issued"
+        }
+        if text.contains("lease accepted") {
+            return "Lease accepted"
+        }
+        if text.contains("lease consumed") {
+            return "Lease consumed"
+        }
+        if text.contains("replay") && text.contains("rejected") {
+            return "Replay rejected"
+        }
+        if text.contains("expired") && text.contains("rejected") {
+            return "Expired rejected"
+        }
+        if text.contains("invalid") && text.contains("rejected") {
+            return "Invalid rejected"
+        }
+        return nil
+    }
+
+    private static func commandLeaseMetadata(for event: AuditEvent) -> String {
+        let text = "\(event.title) \(event.detail)"
+        let allowedKeys = ["call_id", "tool", "error_code"]
+        return allowedKeys.compactMap { key in
+            guard let value = firstAuditField(named: key, in: text) else {
+                return nil
+            }
+            return "\(key)=\(value)"
+        }
+        .joined(separator: " - ")
+    }
+
+    private static func firstAuditField(named key: String, in text: String) -> String? {
+        let pattern = #"\b\#(key)\s*=\s*([A-Za-z0-9._:-]+)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = expression.firstMatch(in: text, range: range),
+              let valueRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[valueRange])
     }
 }
 

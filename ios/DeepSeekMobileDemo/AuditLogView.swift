@@ -89,6 +89,12 @@ private struct AuditTimelineRow: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Label(entry.userAction, systemImage: "person.crop.circle.badge.checkmark")
+                if let leaseLifecycleLabel = entry.leaseLifecycleLabel {
+                    Label(leaseLifecycleLabel, systemImage: "checkmark.seal")
+                }
+                if !entry.commandLeaseMetadata.isEmpty {
+                    Label(entry.commandLeaseMetadata, systemImage: "number")
+                }
                 Label(entry.runnerAuditSummary, systemImage: "doc.text.magnifyingglass")
             }
             .font(.subheadline)

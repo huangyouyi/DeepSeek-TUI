@@ -12,8 +12,18 @@ Create one dated folder per validation run, for example:
 validation/mobile/YYYY-MM-DD-<platform>-<host>/
 ```
 
+The tracked empty skeletons live under
+`docs/mobile-evidence-bundles/templates/`. On Linux, inspect or dry-run bundle
+creation without writing validation artifacts:
+
+```bash
+python3 scripts/mobile_evidence_bundle.py --list
+python3 scripts/mobile_evidence_bundle.py --platform macos-host --host lab-mac --dry-run
+```
+
 Each bundle should include:
 
+- `README.md`: bundle-specific path guide and redaction reminder.
 - `environment.md`: host OS version, CPU architecture, tool versions, repo SHA,
   branch name, and whether the tree had local changes.
 - `commands.log`: copied terminal transcript with timestamps where possible.
@@ -37,6 +47,10 @@ Use this template for each platform run and save it as
 - Checklist scope:
 - Commands/actions:
 - Result:
+- Result summary:
+  | Area | Pass/Fail/Blocker | Related milestone | Next issue/task | `mobile-porting-plan.md` updated? |
+  |---|---|---|---|---|
+  |  |  |  |  |  |
 - Log paths:
 - Screenshot/recording paths:
 - Blockers:
@@ -47,6 +61,56 @@ The evidence log is the index for the raw files in the bundle. Keep command
 output in `commands.log` and link to large logs, screenshots, recordings, crash
 reports, `.xcresult` bundles, `.evtx` exports, and runner traces by relative
 path.
+
+Every completed evidence log must include a result summary table. Use
+`Pass` only when the expected result is proven by attached evidence, `Fail`
+when the run completed but the expected result was not met, and `Blocker` when
+the run could not reach the intended check because of missing hardware,
+credentials, signing, artifacts, network access, or policy. The related
+milestone should point to the closest mobile-runnable milestone such as M9,
+M13, or M16, or to the relevant task-tree item such as S6, T7, or U6. The plan
+updated column should be `Yes` only after the result has been copied into
+`docs/mobile-porting-plan.md`; otherwise leave the next issue/task specific
+enough for the next maintainer to file or execute.
+
+## Linux Validation
+
+Goal: provide one local Linux entrypoint for checks that are safe before a
+macOS, Windows, simulator, device, or LAN runner evidence run. This validation
+does not run cargo and does not edit Rust or iOS files. It includes the safe
+Linux iOS flow simulator dry-run and smoke checks; loopback runner execution
+with `--use-loopback-runner` remains part of the LF-I completion gate because
+it can run cargo.
+
+Run the wrapper from the repository root:
+
+```bash
+python3 scripts/mobile_linux_validation.py --dry-run
+python3 scripts/mobile_linux_validation.py
+```
+
+The wrapper runs these existing checks in order:
+
+```bash
+python3 scripts/mobile_evidence_plan_draft_test.py
+python3 scripts/mobile_evidence_bundle_smoke.py
+python3 scripts/mobile_evidence_bundle.py --list
+python3 scripts/mobile_evidence_bundle.py --platform lan-runner --host lab-runner --date 2026-05-24 --dry-run
+python3 scripts/mobile_ios_flow_simulator.py --dry-run
+python3 scripts/mobile_ios_flow_simulator_smoke.py
+sh -n crates/mobile-agent-core/scripts/uniffi-dry-run
+sh -n ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos
+sh -n ios/DeepSeekMobileDemo/Scripts/verify-macos
+crates/mobile-agent-core/scripts/uniffi-dry-run --check-plan
+ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-plan
+```
+
+`--dry-run` prints the commands without executing them. Without `--dry-run`,
+the wrapper executes each command and returns a non-zero exit code at the first
+failure. Linux results only prove evidence tooling, mobile handoff shell syntax,
+and UniFFI plan consistency; they do not prove SwiftUI, Keychain, SQLite
+sandbox behavior, Xcode package resolution, simulator launch, signing, local
+network permission, or physical-device behavior.
 
 ## macOS Host Checklist
 
@@ -80,6 +144,13 @@ macOS evidence log fields:
   - `xcodebuild -version`:
   - `ios/DeepSeekMobileDemo/Scripts/verify-macos`:
 - Result:
+- Result summary:
+  | Area | Pass/Fail/Blocker | Related milestone | Next issue/task | `mobile-porting-plan.md` updated? |
+  |---|---|---|---|---|
+  | macOS environment capture |  | S6 / M13 |  |  |
+  | Swift package and `verify-macos` |  | S6 / M13 |  |  |
+  | Simulator build/UI smoke |  | S6 / M13 |  |  |
+  | macOS runner bootstrap |  | S6 / M9 |  |  |
 - Log paths:
 - Screenshot/recording paths:
 - Blockers:
@@ -116,6 +187,13 @@ Windows evidence log fields:
   - `$PSVersionTable`:
   - Runner install/bootstrap:
 - Result:
+- Result summary:
+  | Area | Pass/Fail/Blocker | Related milestone | Next issue/task | `mobile-porting-plan.md` updated? |
+  |---|---|---|---|---|
+  | Windows environment and policy |  | S9 / M16 |  |  |
+  | PATH, winget, and UAC diagnostics |  | S9 / M16 |  |  |
+  | Runner install/offline fallback |  | S9 / M9 |  |  |
+  | PowerShell runner behavior |  | S9 / M16 |  |  |
 - Log paths:
 - Screenshot/recording paths:
 - Blockers:
@@ -151,6 +229,13 @@ iOS simulator evidence log fields:
   - `xcodebuild ... build`:
   - Launch/navigation smoke:
 - Result:
+- Result summary:
+  | Area | Pass/Fail/Blocker | Related milestone | Next issue/task | `mobile-porting-plan.md` updated? |
+  |---|---|---|---|---|
+  | Simulator inventory/build |  | S7 / M13 |  |  |
+  | App launch and mock navigation |  | S7 / M1 |  |  |
+  | Local network rehearsal |  | S7 / M9 |  |  |
+  | UniFFI handoff check |  | S7 / M0 / M14 |  |  |
 - Log paths:
 - Screenshot/recording paths:
 - Blockers:
@@ -187,6 +272,13 @@ iOS device evidence log fields:
   - Keychain/SQLite persistence smoke:
   - Local network runner connection:
 - Result:
+- Result summary:
+  | Area | Pass/Fail/Blocker | Related milestone | Next issue/task | `mobile-porting-plan.md` updated? |
+  |---|---|---|---|---|
+  | Signing and device launch |  | S7 / M13 |  |  |
+  | Keychain persistence |  | S7 / M3 |  |  |
+  | SQLite and lifecycle persistence |  | S7 / M3 |  |  |
+  | Local network and Rust bridge |  | S7 / M9 / M14 |  |  |
 - Log paths:
 - Screenshot/recording paths:
 - Blockers:
@@ -225,6 +317,13 @@ LAN runner evidence log fields:
   - `/health`:
   - Pairing/capabilities/diagnose:
 - Result:
+- Result summary:
+  | Area | Pass/Fail/Blocker | Related milestone | Next issue/task | `mobile-porting-plan.md` updated? |
+  |---|---|---|---|---|
+  | Bind, health, and firewall reachability |  | S8 / M9 |  |  |
+  | Pairing and auth rejection |  | S8 / M9 |  |  |
+  | Capabilities and diagnose |  | S8 / M9 |  |  |
+  | Approval-required shell path and interruption |  | S8 / M12 |  |  |
 - Log paths:
 - Screenshot/recording paths:
 - Blockers:

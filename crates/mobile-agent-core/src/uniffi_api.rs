@@ -150,6 +150,25 @@ impl IosMobileAgentCore {
         .map_err(|error| error.to_string())
     }
 
+    pub fn runner_recent_audit_json(
+        &self,
+        session_id: String,
+        response_json: String,
+    ) -> Result<String, String> {
+        let response = serde_json::from_str::<Value>(&response_json)
+            .map_err(|error| format!("runner audit/recent JSON was invalid: {error}"))?;
+        let mut audit = AuditLog::default();
+        audit.append_runner_recent_audit_body(session_id, &response)?;
+        let mut audit_entries =
+            serde_json::to_value(audit.entries()).map_err(|error| error.to_string())?;
+        normalize_ios_runner_command_lease_entries(&mut audit_entries);
+
+        serde_json::to_string(&json!({
+            "audit_entries": audit_entries,
+        }))
+        .map_err(|error| error.to_string())
+    }
+
     pub fn runner_maintenance_plan_json(
         &self,
         session_id: String,
@@ -354,6 +373,70 @@ fn is_sensitive_json_key(key: &str) -> bool {
         lower.as_str(),
         "authorization" | "nonce" | "raw_nonce" | "raw" | "bearer_token" | "token"
     )
+}
+
+fn normalize_ios_runner_command_lease_entries(entries: &mut Value) {
+    let Some(entries) = entries.as_array_mut() else {
+        return;
+    };
+
+    for entry in entries {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        if object.get("kind").and_then(Value::as_str) != Some("runner_command_lease") {
+            continue;
+        }
+
+        let action = object
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let call_id = object.get("call_id").and_then(Value::as_str);
+        let detail_json = object
+            .get("detail")
+            .and_then(Value::as_str)
+            .and_then(|detail| serde_json::from_str::<Value>(detail).ok())
+            .unwrap_or(Value::Null);
+        let tool = detail_json.get("tool").and_then(Value::as_str);
+        let error_code = detail_json.get("error_code").and_then(Value::as_str);
+
+        object.insert(
+            "detail".to_string(),
+            Value::String(ios_command_lease_detail(action, call_id, tool, error_code)),
+        );
+    }
+}
+
+fn ios_command_lease_detail(
+    action: &str,
+    call_id: Option<&str>,
+    tool: Option<&str>,
+    error_code: Option<&str>,
+) -> String {
+    let mut detail = match action {
+        "accepted" => "lease accepted".to_string(),
+        "consumed" => "lease consumed".to_string(),
+        "replay_rejected" => "lease replay rejected".to_string(),
+        "expired_rejected" => "lease expired rejected".to_string(),
+        "invalid_action_rejected" => "lease invalid rejected".to_string(),
+        other => format!("lease {other}"),
+    };
+
+    if let Some(call_id) = call_id {
+        detail.push_str(" call_id=");
+        detail.push_str(call_id);
+    }
+    if let Some(tool) = tool {
+        detail.push_str(" tool=");
+        detail.push_str(tool);
+    }
+    if let Some(error_code) = error_code {
+        detail.push_str(" error_code=");
+        detail.push_str(error_code);
+    }
+
+    detail
 }
 
 fn maintenance_steps_json(body: &Value) -> Vec<Value> {

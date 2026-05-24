@@ -39,7 +39,8 @@ struct CommandCardView: View {
                 Label("Lease \(command.lease.leaseIDLabel)", systemImage: "checkmark.seal")
                 Label("Idempotency \(command.lease.idempotencyKeyLabel)", systemImage: "arrow.triangle.2.circlepath")
                 Label("Expires \(command.lease.expirySummary)", systemImage: "clock")
-                Label(command.lease.approvedActionSummary, systemImage: "doc.text")
+                Label(command.lease.executionConstraintSummary, systemImage: "lock.shield")
+                Label(command.lease.boundActionSummary, systemImage: "doc.text")
             }
             .font(.caption)
             .foregroundStyle(.secondary)

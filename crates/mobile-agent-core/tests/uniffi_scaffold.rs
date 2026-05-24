@@ -1,4 +1,10 @@
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -62,6 +68,52 @@ fn linux_dry_run_script_documents_generation_command_plan() {
     assert!(script.contains("cargo build -p deepseek-mobile-agent-core --release"));
     assert!(script.contains("libdeepseek_mobile_agent_core.a"));
     assert!(script.contains("check-plan"));
+}
+
+#[test]
+fn linux_dry_run_check_artifacts_accepts_mock_handoff_outputs() {
+    let handoff_root = temp_handoff_root("success");
+    create_mock_handoff_artifacts(&handoff_root);
+
+    let output = Command::new(Path::new(CRATE_ROOT).join("scripts/uniffi-dry-run"))
+        .arg("--check-artifacts")
+        .env("DEEPSEEK_UNIFFI_HANDOFF_ROOT", &handoff_root)
+        .output()
+        .expect("uniffi-dry-run --check-artifacts should run");
+
+    let _cleanup = fs::remove_dir_all(&handoff_root);
+    assert!(
+        output.status.success(),
+        "expected mock handoff artifact check to pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("UniFFI generated artifact handoff check passed.")
+    );
+}
+
+#[test]
+fn linux_dry_run_check_artifacts_reports_missing_mock_handoff_output() {
+    let handoff_root = temp_handoff_root("missing");
+    fs::create_dir_all(handoff_root.join("Generated")).expect("Generated dir should be creatable");
+    fs::create_dir_all(handoff_root.join("Artifacts")).expect("Artifacts dir should be creatable");
+
+    let output = Command::new(Path::new(CRATE_ROOT).join("scripts/uniffi-dry-run"))
+        .arg("--check-artifacts")
+        .env("DEEPSEEK_UNIFFI_HANDOFF_ROOT", &handoff_root)
+        .output()
+        .expect("uniffi-dry-run --check-artifacts should run");
+
+    let _cleanup = fs::remove_dir_all(&handoff_root);
+    assert!(
+        !output.status.success(),
+        "expected missing mock handoff artifact check to fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error: missing generated UniFFI artifact:"));
+    assert!(stderr.contains("Generated/DeepSeekMobileAgentCore.swift"));
 }
 
 fn rust_facade_methods(source: &str) -> BTreeSet<String> {
@@ -133,4 +185,41 @@ fn udl_interface_methods(source: &str) -> BTreeSet<String> {
     }
 
     methods
+}
+
+fn create_mock_handoff_artifacts(handoff_root: &Path) {
+    fs::create_dir_all(handoff_root.join("Generated")).expect("Generated dir should be creatable");
+    fs::create_dir_all(handoff_root.join("Artifacts")).expect("Artifacts dir should be creatable");
+    fs::write(
+        handoff_root
+            .join("Generated")
+            .join("DeepSeekMobileAgentCore.swift"),
+        "// mock Swift UniFFI bindings\n",
+    )
+    .expect("mock Swift handoff should be writable");
+    fs::write(
+        handoff_root
+            .join("Generated")
+            .join("deepseek_mobile_agent_coreFFI.modulemap"),
+        "module deepseek_mobile_agent_coreFFI {}\n",
+    )
+    .expect("mock modulemap handoff should be writable");
+    fs::write(
+        handoff_root
+            .join("Artifacts")
+            .join("libdeepseek_mobile_agent_core.a"),
+        "mock static archive\n",
+    )
+    .expect("mock staticlib handoff should be writable");
+}
+
+fn temp_handoff_root(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "deepseek-uniffi-handoff-{label}-{}-{nanos}",
+        std::process::id()
+    ))
 }

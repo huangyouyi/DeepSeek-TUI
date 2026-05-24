@@ -440,6 +440,8 @@ impl RunnerApiHandler {
             };
         }
 
+        self.record_audit_event(approval_nonce_audit_event("issued", "issued"));
+
         RunnerApiResponse {
             status: 200,
             body: json!({
@@ -492,7 +494,11 @@ impl RunnerApiHandler {
                 }));
             }
             (
-                RunnerRequest::ToolCall { call_id, name, .. },
+                RunnerRequest::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                },
                 RunnerResponse::ToolCall {
                     success, result, ..
                 },
@@ -508,6 +514,17 @@ impl RunnerApiHandler {
                 });
                 if let Some(error_code) = error_code {
                     metadata["error_code"] = json!(error_code);
+                }
+
+                if arguments.get("lease").is_some() {
+                    for event in command_lease_audit_events(
+                        call_id,
+                        name,
+                        *success,
+                        metadata.get("error_code").and_then(Value::as_str),
+                    ) {
+                        self.record_audit_event(event);
+                    }
                 }
 
                 let (event, status) = if name.starts_with("remote.browser.") {
@@ -895,6 +912,71 @@ fn maintenance_execute_audit_event(reason: &'static str) -> Value {
         "event": "maintenance.execute",
         "status": "no_op",
         "reason": reason,
+    })
+}
+
+fn command_lease_audit_events(
+    call_id: &str,
+    tool: &str,
+    success: bool,
+    error_code: Option<&str>,
+) -> Vec<Value> {
+    if success {
+        return vec![
+            command_lease_audit_event(call_id, tool, "accepted", "accepted", None),
+            command_lease_audit_event(call_id, tool, "consumed", "consumed", None),
+        ];
+    }
+
+    match error_code {
+        Some("approval_replayed") => vec![command_lease_audit_event(
+            call_id,
+            tool,
+            "replay_rejected",
+            "replayed",
+            error_code,
+        )],
+        Some("approval_expired") => vec![command_lease_audit_event(
+            call_id,
+            tool,
+            "expired_rejected",
+            "expired",
+            error_code,
+        )],
+        Some("approval_required") => vec![command_lease_audit_event(
+            call_id,
+            tool,
+            "invalid_action_rejected",
+            "invalid_action",
+            error_code,
+        )],
+        _ => Vec::new(),
+    }
+}
+
+fn command_lease_audit_event(
+    call_id: &str,
+    tool: &str,
+    status: &'static str,
+    lease_status: &'static str,
+    error_code: Option<&str>,
+) -> Value {
+    let mut metadata = json!({
+        "call_id": call_id,
+        "tool": tool,
+    });
+    if let Some(error_code) = error_code {
+        metadata["error_code"] = json!(error_code);
+    }
+
+    json!({
+        "event": "shell.command_lease",
+        "status": status,
+        "lease": {
+            "label": "command_lease",
+            "status": lease_status,
+        },
+        "metadata": metadata,
     })
 }
 

@@ -389,6 +389,52 @@ impl AuditLog {
         }
     }
 
+    pub fn append_runner_recent_audit_body(
+        &mut self,
+        session_id: impl Into<String>,
+        body: &Value,
+    ) -> Result<(), String> {
+        let session_id = session_id.into();
+
+        if let Some(entries) = body.get("entries") {
+            let entries = entries
+                .as_array()
+                .ok_or_else(|| "runner audit/recent entries must be an array".to_string())?;
+            let entries = entries
+                .iter()
+                .cloned()
+                .map(serde_json::from_value::<AuditEntry>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("runner audit/recent entry was invalid: {error}"))?;
+            self.append_runner_recent_entries(session_id, entries);
+            return Ok(());
+        }
+
+        let events = body
+            .get("audit")
+            .or_else(|| body.get("events"))
+            .ok_or_else(|| "runner audit/recent response is missing audit array".to_string())?
+            .as_array()
+            .ok_or_else(|| "runner audit/recent audit must be an array".to_string())?
+            .to_vec();
+
+        self.append_runner_recent_audit_events(session_id, events);
+        Ok(())
+    }
+
+    pub fn append_runner_recent_audit_events<I>(&mut self, session_id: impl Into<String>, events: I)
+    where
+        I: IntoIterator<Item = Value>,
+    {
+        let session_id = session_id.into();
+
+        for event in events {
+            if let Some(draft) = runner_audit_event_draft(&session_id, &event) {
+                self.append_entry(draft);
+            }
+        }
+    }
+
     fn append_entry(&mut self, draft: AuditEntryDraft) -> &AuditEntry {
         let seq = self
             .entries
@@ -432,6 +478,70 @@ fn now_created_at() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+fn runner_audit_event_draft(session_id: &str, event: &Value) -> Option<AuditEntryDraft> {
+    let event_name = event.get("event").and_then(Value::as_str)?;
+    if event_name != "shell.command_lease" {
+        return None;
+    }
+
+    let status = event.get("status").and_then(Value::as_str)?;
+    if !matches!(
+        status,
+        "accepted"
+            | "consumed"
+            | "replay_rejected"
+            | "expired_rejected"
+            | "invalid_action_rejected"
+    ) {
+        return None;
+    }
+
+    let metadata = event.get("metadata").unwrap_or(&Value::Null);
+    let call_id = metadata
+        .get("call_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let tool = metadata.get("tool").and_then(Value::as_str);
+    let error_code = metadata.get("error_code").and_then(Value::as_str);
+    let lease = event.get("lease").unwrap_or(&Value::Null);
+    let lease_label = lease.get("label").and_then(Value::as_str);
+    let lease_status = lease.get("status").and_then(Value::as_str);
+
+    let mut detail = json!({
+        "event": event_name,
+        "status": status,
+    });
+    if let Some(tool) = tool {
+        detail["tool"] = json!(tool);
+    }
+    if let Some(error_code) = error_code {
+        detail["error_code"] = json!(error_code);
+    }
+    if lease_label.is_some() || lease_status.is_some() {
+        detail["lease"] = json!({});
+        if let Some(lease_label) = lease_label {
+            detail["lease"]["label"] = json!(lease_label);
+        }
+        if let Some(lease_status) = lease_status {
+            detail["lease"]["status"] = json!(lease_status);
+        }
+    }
+
+    Some(AuditEntryDraft {
+        kind: "runner_command_lease".to_string(),
+        action: status.to_string(),
+        created_at: event
+            .get("created_at")
+            .and_then(Value::as_str)
+            .map_or_else(now_created_at, str::to_string),
+        summary: format!("command lease {status}"),
+        detail: detail.to_string(),
+        call_id,
+        approval_id: None,
+        session_id: Some(session_id.to_string()),
+    })
 }
 
 fn sanitized_audit_detail(detail: &str) -> String {

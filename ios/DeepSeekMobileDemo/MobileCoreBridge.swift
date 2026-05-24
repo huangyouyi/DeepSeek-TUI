@@ -777,6 +777,48 @@ final class MockMobileCoreBridge: MobileCoreBridge {
             ),
             AuditEvent(
                 id: UUID(),
+                timestamp: Date().addingTimeInterval(-720),
+                kind: .command,
+                title: "Command lease nonce issued",
+                detail: "nonce issued call_id=call_diag_001 tool=remote.diagnose.system lease_id=lease-7F3A-CLI idempotency_key=idem-diag-001"
+            ),
+            AuditEvent(
+                id: UUID(),
+                timestamp: Date().addingTimeInterval(-780),
+                kind: .command,
+                title: "Command lease accepted",
+                detail: "lease accepted call_id=call_diag_001 tool=remote.diagnose.system"
+            ),
+            AuditEvent(
+                id: UUID(),
+                timestamp: Date().addingTimeInterval(-840),
+                kind: .command,
+                title: "Command lease consumed",
+                detail: "lease consumed call_id=call_diag_001 tool=remote.diagnose.system"
+            ),
+            AuditEvent(
+                id: UUID(),
+                timestamp: Date().addingTimeInterval(-900),
+                kind: .command,
+                title: "Command lease replay rejected",
+                detail: "lease replay rejected call_id=call_diag_001 tool=remote.diagnose.system error_code=lease_replay lease_id=lease-7F3A-CLI"
+            ),
+            AuditEvent(
+                id: UUID(),
+                timestamp: Date().addingTimeInterval(-960),
+                kind: .command,
+                title: "Command lease expired rejected",
+                detail: "lease expired rejected call_id=call_diag_002 tool=remote.diagnose.system error_code=lease_expired"
+            ),
+            AuditEvent(
+                id: UUID(),
+                timestamp: Date().addingTimeInterval(-1_020),
+                kind: .command,
+                title: "Command lease invalid rejected",
+                detail: "lease invalid rejected call_id=call_diag_003 tool=remote.diagnose.system error_code=lease_invalid idempotency_secret=idem-invalid-003"
+            ),
+            AuditEvent(
+                id: UUID(),
                 timestamp: Date().addingTimeInterval(-1_180),
                 kind: .maintenance,
                 title: "Planned maintenance dry-run",

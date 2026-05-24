@@ -323,6 +323,8 @@ fn browser_enabled_click_uses_injected_engine_but_stays_approval_bound() {
             label: Some("Next".to_string()),
             action: "click".to_string(),
             metadata: Some(json!({ "source": "test" })),
+            idempotency_key: None,
+            approval_nonce: None,
         }]
     );
 }

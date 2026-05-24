@@ -23,6 +23,29 @@ package. On Linux, this check is expected to stop with a clear macOS-toolchain
 message; Linux CI/dev can only verify the Rust crates until the iOS demo is wired
 to a macOS Swift toolchain and the Rust mobile core is linked into the app.
 
+## Runner Command Lease Audit Contract
+
+`IosMobileAgentCore.runner_recent_audit_json(session_id, response_json)` is the
+Rust-side contract for runner `/mobile/audit/recent` command lease entries. For
+`shell.command_lease` records, the returned `audit_entries` array must expose
+only the fields the current Swift `AuditTimelineEntry` presentation expects:
+
+- `kind`: `runner_command_lease`
+- `action`: one of `accepted`, `consumed`, `replay_rejected`,
+  `expired_rejected`, or `invalid_action_rejected`
+- `summary`: `command lease <action>`
+- `call_id`: the runner tool call id
+- `detail`: a display-safe key/value string such as
+  `lease replay rejected call_id=... tool=... error_code=...`
+
+Swift timeline parsing intentionally whitelists only `call_id`, `tool`, and
+`error_code` from that `detail` text. Rust must not emit bearer tokens, pairing
+tokens, raw lease ids, idempotency keys/secrets, command text, env names, env
+values, nonce material, or raw credential values in this UniFFI audit payload.
+Linux verification covers this in
+`cargo test -p deepseek-mobile-agent-core --test uniffi_api`; Swift compilation
+remains macOS-only.
+
 ## Manual UI Pass
 
 1. Open `ios/DeepSeekMobileDemo/Package.swift` in Xcode on macOS.
@@ -33,9 +56,9 @@ to a macOS Swift toolchain and the Rust mobile core is linked into the app.
 5. Send a message and confirm the mock assistant response appears.
 6. Open the pending command approval sheet, confirm the approval nonce label is
    pending/redacted, and confirm the command lease id, idempotency key, expiry,
-   and approved action summary are visible without bearer or pairing token
-   material. Approve and deny in separate runs to confirm state and audit events
-   update.
+   approved action summary, and one-time-before-expiry warning are visible
+   without bearer, pairing token, nonce secret, or command secret material.
+   Approve and deny in separate runs to confirm state and audit events update.
 7. Open connection setup, edit settings, save, and confirm an audit entry is
    added.
 8. Switch to Runner or Remote MCP mode, tap Discover, and confirm the
@@ -79,8 +102,12 @@ to a macOS Swift toolchain and the Rust mobile core is linked into the app.
    pairing redemption, and capability discovery entries appear in reverse
    chronological order as separate events, with approved command entries
    recording nonce issued/bound status and denied command entries recording no
-   nonce issuance. Command approval UI and audit text must not display bearer
-   tokens, pairing tokens, or raw credential values.
+   nonce issuance. Confirm command lease audit rows show nonce issued, lease
+   accepted, lease consumed, replay rejected, expired rejected, and invalid
+   rejected lifecycle states, with only `call_id`, `tool`, and `error_code`
+   metadata visible. Command approval UI and audit text must not display bearer
+   tokens, pairing tokens, nonce secrets, raw lease ids, idempotency secrets,
+   command text, env values, or raw credential values.
 22. Confirm browser audit entries appear separately for browser session opened,
    text extracted, click approval requested, and click approval issued or denied.
    No raw token, raw shell nonce, or raw browser click nonce should be visible.

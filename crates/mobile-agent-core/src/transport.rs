@@ -125,6 +125,7 @@ impl Default for RunnerMaintenanceApproval {
 pub struct RunnerMaintenancePlanRequest {
     pub action: String,
     pub dry_run: bool,
+    pub idempotency_key: Option<String>,
     pub approval: Option<RunnerMaintenanceApproval>,
 }
 
@@ -134,6 +135,7 @@ impl RunnerMaintenancePlanRequest {
         Self {
             action: action.into(),
             dry_run: true,
+            idempotency_key: None,
             approval: None,
         }
     }
@@ -151,10 +153,24 @@ impl RunnerMaintenancePlanRequest {
     }
 
     #[must_use]
+    pub fn with_idempotency_key(mut self, idempotency_key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(idempotency_key.into());
+        self
+    }
+
+    #[must_use]
     fn into_body(self) -> Value {
         let mut body = serde_json::Map::new();
         body.insert("action".to_string(), Value::String(self.action));
         body.insert("dry_run".to_string(), Value::Bool(self.dry_run));
+        if let Some(idempotency_key) = self.idempotency_key
+            && !idempotency_key.trim().is_empty()
+        {
+            body.insert(
+                "idempotency_key".to_string(),
+                Value::String(idempotency_key),
+            );
+        }
 
         if let Some(approval) = self.approval
             && !approval.is_empty()

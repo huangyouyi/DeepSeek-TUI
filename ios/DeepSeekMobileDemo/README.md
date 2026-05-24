@@ -38,9 +38,11 @@ current demo views.
   approval. The next mock runner request auth metadata can report approval nonce
   presence/status; denied commands do not issue a nonce.
 - Command approval also carries the future command lease scaffold: redacted
-  lease id label, idempotency key label, expiry, and approved action summary are
-  visible on the command card and approval sheet. Bearer tokens and pairing
-  tokens are explicitly not displayed in this approval surface.
+  lease id label, idempotency key label, expiry, one-time execution warning, and
+  approved action summary are visible on the command card and approval sheet.
+  The copy states that the approval only allows this action to execute once
+  before expiry. Bearer tokens, pairing tokens, nonce secrets, and command
+  secrets are explicitly not displayed in this approval surface.
 - Browser click approval uses a separate review sheet from shell command
   approval. It labels the action as browser automation, shows the click target
   and URL, and issues only a redacted click nonce label when approved.
@@ -49,8 +51,12 @@ current demo views.
   the session view.
 - Approval review shows risk, command, cwd, and rationale, and records mock
   audit events for saved connection settings, mock pairing actions, credential
-  storage, browser session open/text extraction/click approval decisions, and
-  shell approval decisions with nonce issued/bound status when approved.
+  storage, browser session open/text extraction/click approval decisions, shell
+  approval decisions, and command lease lifecycle events. The audit timeline
+  displays nonce issued, lease accepted/consumed, and replay/expired/invalid
+  rejection states with `call_id`, `tool`, and `error_code` only; bearer tokens,
+  pairing tokens, raw lease ids, idempotency secrets, command text, and env
+  values are redacted before display.
 - `MobileCoreBridge` protocol plus `MockMobileCoreBridge` for local UI work.
 - Adapter scaffolds for iOS secure credentials and SQLite-backed audit storage.
 - Clear TODO markers showing where future UniFFI generated bindings should be
@@ -109,17 +115,19 @@ The future macOS generation handoff is scaffolded separately:
 
 ```bash
 ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-plan
+ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --install-artifacts
 ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos
 ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --xcframework
 ```
 
 `--check-plan` is safe on Linux because it only validates repository paths,
 the `deepseek-mobile-agent-core` staticlib metadata, and the documented output
-locations. The generation modes are macOS-only and require the Rust iOS
-targets, Xcode tools for `.xcframework` packaging, and UniFFI tooling. Until
-the Rust side exposes a concrete UniFFI UDL/component, the default
-`DEEPSEEK_UNIFFI_SOURCE` path is only a placeholder and generation should fail
-with an explicit missing-input error rather than guessing a binding surface.
+locations without requiring generated files. `--install-artifacts` is also safe
+on Linux: set `DEEPSEEK_UNIFFI_ARTIFACT_ROOT` to a mock or generated artifact
+root and `DEEPSEEK_UNIFFI_HANDOFF_ROOT` to a temporary handoff root to copy the
+Swift file, module map, and static library or `.xcframework` into the expected
+iOS layout. The generation modes are macOS-only and require the Rust iOS
+targets, Xcode tools for `.xcframework` packaging, and UniFFI tooling.
 
 Manual macOS/Xcode smoke pass:
 
@@ -217,9 +225,10 @@ retain a raw nonce secret.
 3. Confirm the command card and approval sheet show the nonce as pending until
    approval.
 4. Confirm both surfaces show the command lease id label, idempotency key label,
-   expiry, and approved action summary.
-5. Confirm neither surface shows bearer token text, pairing token text, or any
-   raw credential value.
+   expiry, approved action summary, and a statement that this approval only
+   allows this action to execute once before expiry.
+5. Confirm neither surface shows bearer token text, pairing token text, nonce
+   secret text, command secret text, or any raw credential value.
 6. Approve the command and confirm the audit log records that an approval nonce
    was issued and bound to the command.
 7. Reopen connection setup and confirm `Runner Request Auth` reports approval
@@ -313,6 +322,24 @@ UniFFI source exists. It defaults to
 `crates/mobile-agent-core/src/uniffi_api.udl`; set `DEEPSEEK_UNIFFI_SOURCE` if
 the project lands the component at a different path. Set `UNIFFI_BINDGEN` when
 the UniFFI generator is installed under a non-default command name.
+
+For Linux or CI smoke tests that should not invoke Swift, Xcode, cargo, or the
+UniFFI generator, create a mock source root and install it into a mock handoff
+root:
+
+```bash
+DEEPSEEK_UNIFFI_ARTIFACT_ROOT=/tmp/deepseek-uniffi-source \
+DEEPSEEK_UNIFFI_HANDOFF_ROOT=/tmp/deepseek-uniffi-handoff \
+  ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --install-artifacts
+
+DEEPSEEK_UNIFFI_HANDOFF_ROOT=/tmp/deepseek-uniffi-handoff \
+  ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-artifacts
+```
+
+The source root may contain `DeepSeekMobileAgentCore.swift` and
+`deepseek_mobile_agent_coreFFI.modulemap` directly or under `Generated/`, plus
+either `libdeepseek_mobile_agent_core.a` or
+`DeepSeekMobileAgentCore.xcframework` directly or under `Artifacts/`.
 
 `Package.swift` excludes `Generated/` from the mock executable target today.
 When the production bridge target exists, add the generated Swift file and
