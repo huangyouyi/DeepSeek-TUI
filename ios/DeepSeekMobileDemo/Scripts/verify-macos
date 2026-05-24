@@ -1,0 +1,106 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+check_uniffi_layout=0
+
+usage() {
+  printf '%s\n' "usage: ios/DeepSeekMobileDemo/Scripts/verify-macos [--check-uniffi-layout]"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check-uniffi-layout)
+      check_uniffi_layout=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      printf '%s\n' "error: unknown option: $1"
+      exit 64
+      ;;
+  esac
+  shift
+done
+
+require_file() {
+  if [ ! -f "$package_dir/$1" ]; then
+    printf '%s\n' "error: missing expected UniFFI artifact: ios/DeepSeekMobileDemo/$1"
+    return 1
+  fi
+}
+
+require_staticlib_or_xcframework() {
+  if [ -f "$package_dir/Artifacts/libdeepseek_mobile_agent_core.a" ]; then
+    return 0
+  fi
+
+  if [ -d "$package_dir/Artifacts/DeepSeekMobileAgentCore.xcframework" ]; then
+    return 0
+  fi
+
+  printf '%s\n' "error: missing expected Rust artifact:"
+  printf '%s\n' "  ios/DeepSeekMobileDemo/Artifacts/libdeepseek_mobile_agent_core.a"
+  printf '%s\n' "  or ios/DeepSeekMobileDemo/Artifacts/DeepSeekMobileAgentCore.xcframework"
+  printf '%s\n' "Run ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos on macOS after the UniFFI component exists."
+  return 1
+}
+
+if [ "$check_uniffi_layout" -eq 1 ]; then
+  printf '%s\n' "Checking documented UniFFI package layout..."
+  require_file "Generated/DeepSeekMobileAgentCore.swift"
+  require_file "Generated/deepseek_mobile_agent_coreFFI.modulemap"
+  require_staticlib_or_xcframework
+fi
+
+if ! command -v swift >/dev/null 2>&1; then
+  printf '%s\n' "error: swift was not found on PATH."
+  printf '%s\n' "Install the macOS Swift/Xcode toolchain, then rerun this from a macOS host."
+  printf '%s\n' "Linux CI/dev should verify the Rust workspace only; this SwiftUI shell requires macOS."
+  exit 127
+fi
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "error: DeepSeekMobileDemo Swift verification requires macOS."
+  printf '%s\n' "This package imports iOS/macOS Apple frameworks such as SwiftUI and Security."
+  printf '%s\n' "On Linux, run Rust checks from the repository root instead:"
+  printf '%s\n' "  cargo build"
+  printf '%s\n' "  cargo test --workspace --all-features"
+  exit 2
+fi
+
+cd "$package_dir"
+
+printf '%s\n' "Running swift package describe..."
+swift package describe
+
+printf '%s\n' "Running swift test..."
+swift test
+
+printf '%s\n' "Running swift build..."
+swift build
+
+if command -v xcodebuild >/dev/null 2>&1; then
+  destination=${DEEPSEEK_IOS_SIM_DESTINATION:-"platform=iOS Simulator,name=iPhone 15"}
+  printf '%s\n' "Running Xcode simulator build for ${destination}..."
+  if ! xcodebuild -scheme DeepSeekMobileDemo -destination "$destination" build; then
+    printf '%s\n' "warning: simulator build failed. If the destination is missing, list available devices with:"
+    printf '%s\n' "  xcrun simctl list devices available"
+    printf '%s\n' "Then rerun with DEEPSEEK_IOS_SIM_DESTINATION='platform=iOS Simulator,name=<device>'."
+    exit 1
+  fi
+else
+  printf '%s\n' "warning: xcodebuild was not found; skipped iOS simulator build."
+fi
+
+printf '%s\n' "Swift package checks completed."
+printf '%s\n' ""
+printf '%s\n' "Manual smoke checks still required on macOS/Xcode:"
+printf '%s\n' "  1. Open ios/DeepSeekMobileDemo/Package.swift in Xcode."
+printf '%s\n' "  2. Run DeepSeekMobileDemo on an iOS simulator and click through session, chat, connection, approval, bootstrap, browser, maintenance, and audit screens."
+printf '%s\n' "  3. When UniFFI artifacts exist, confirm generated Swift files, module map, headers, and Rust .xcframework/static library are linked by both simulator and device builds."
+printf '%s\n' "  4. With a live kai-runner on the LAN, verify pairing, /health, /capabilities, approval nonce request, and one blocked or dry-run tool call."

@@ -1,0 +1,230 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+repo_root=$(CDPATH= cd -- "$package_dir/../.." && pwd)
+
+crate_dir="$repo_root/crates/mobile-agent-core"
+generated_dir="$package_dir/Generated"
+artifacts_dir="$package_dir/Artifacts"
+headers_dir="$artifacts_dir/Headers"
+modulemap_path="$generated_dir/deepseek_mobile_agent_coreFFI.modulemap"
+swift_path="$generated_dir/DeepSeekMobileAgentCore.swift"
+staticlib_path="$artifacts_dir/libdeepseek_mobile_agent_core.a"
+xcframework_path="$artifacts_dir/DeepSeekMobileAgentCore.xcframework"
+
+crate_name="deepseek-mobile-agent-core"
+lib_name="deepseek_mobile_agent_core"
+uniffi_source=${DEEPSEEK_UNIFFI_SOURCE:-"$crate_dir/src/uniffi_api.udl"}
+uniffi_bindgen=${UNIFFI_BINDGEN:-uniffi-bindgen}
+
+mode="build"
+package_xcframework=0
+
+usage() {
+  cat <<'EOF'
+usage: ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos [--check-plan] [--check-artifacts] [--xcframework]
+
+Scaffolds the future macOS-only UniFFI handoff for DeepSeekMobileDemo:
+  - generate Swift UniFFI bindings into ios/DeepSeekMobileDemo/Generated
+  - build the Rust static library for iOS simulator/device targets
+  - place libdeepseek_mobile_agent_core.a or DeepSeekMobileAgentCore.xcframework
+    under ios/DeepSeekMobileDemo/Artifacts for verify-macos --check-uniffi-layout
+
+Linux usage:
+  sh -n ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos
+  ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-plan
+  ios/DeepSeekMobileDemo/Scripts/generate-uniffi-macos --check-artifacts
+
+Modes:
+  --check-plan       Validate UDL, crate metadata, and documented handoff paths
+                     without requiring generated artifacts.
+  --check-artifacts  Validate the same plan and require generated Swift,
+                     modulemap, and Rust staticlib or xcframework outputs.
+
+Environment:
+  DEEPSEEK_UNIFFI_SOURCE  UniFFI UDL/component source path.
+                          Default: crates/mobile-agent-core/src/uniffi_api.udl
+  UNIFFI_BINDGEN          UniFFI binding generator command.
+                          Default: uniffi-bindgen
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check-plan)
+      mode="check"
+      ;;
+    --check-artifacts)
+      mode="artifacts"
+      ;;
+    --xcframework)
+      package_xcframework=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      printf '%s\n' "error: unknown option: $1"
+      exit 64
+      ;;
+  esac
+  shift
+done
+
+require_file() {
+  if [ ! -f "$1" ]; then
+    printf '%s\n' "error: missing expected file: $1"
+    return 1
+  fi
+}
+
+require_artifact_file() {
+  if [ ! -f "$1" ]; then
+    printf '%s\n' "error: missing generated UniFFI artifact: $1"
+    return 1
+  fi
+}
+
+require_staticlib_or_xcframework() {
+  if [ -f "$staticlib_path" ]; then
+    return 0
+  fi
+
+  if [ -d "$xcframework_path" ]; then
+    return 0
+  fi
+
+  printf '%s\n' "error: missing generated Rust handoff artifact:"
+  printf '%s\n' "  $staticlib_path"
+  printf '%s\n' "  or $xcframework_path"
+  return 1
+}
+
+describe_layout() {
+  printf '%s\n' "UniFFI input:"
+  printf '%s\n' "  $uniffi_source"
+  printf '%s\n' "Expected generated outputs:"
+  printf '%s\n' "  $swift_path"
+  printf '%s\n' "  $modulemap_path"
+  printf '%s\n' "Expected Rust artifact output:"
+  if [ "$package_xcframework" -eq 1 ]; then
+    printf '%s\n' "  $xcframework_path"
+  else
+    printf '%s\n' "  $staticlib_path"
+  fi
+}
+
+check_layout_inputs() {
+  require_file "$crate_dir/Cargo.toml"
+  require_file "$crate_dir/src/lib.rs"
+  require_file "$crate_dir/src/uniffi_api.rs"
+  require_file "$uniffi_source"
+  require_file "$package_dir/Package.swift"
+
+  if ! grep -Fq 'namespace deepseek_mobile_agent_core' "$uniffi_source"; then
+    printf '%s\n' "error: $uniffi_source does not declare namespace deepseek_mobile_agent_core"
+    return 1
+  fi
+
+  if ! grep -Fq 'interface IosMobileAgentCore' "$uniffi_source"; then
+    printf '%s\n' "error: $uniffi_source does not declare interface IosMobileAgentCore"
+    return 1
+  fi
+
+  if ! grep -Fq 'dictionary IosConnectionProfile' "$uniffi_source"; then
+    printf '%s\n' "error: $uniffi_source does not declare dictionary IosConnectionProfile"
+    return 1
+  fi
+
+  if ! grep -Fq 'name = "deepseek-mobile-agent-core"' "$crate_dir/Cargo.toml"; then
+    printf '%s\n' "error: $crate_dir/Cargo.toml does not declare package $crate_name"
+    return 1
+  fi
+
+  if ! grep -Fq 'crate-type = ["lib", "staticlib", "cdylib"]' "$crate_dir/Cargo.toml"; then
+    printf '%s\n' "error: $crate_dir/Cargo.toml must keep crate-type = [\"lib\", \"staticlib\", \"cdylib\"]"
+    return 1
+  fi
+
+  if ! grep -Fq "name = \"$lib_name\"" "$crate_dir/Cargo.toml"; then
+    printf '%s\n' "error: $crate_dir/Cargo.toml does not declare lib name $lib_name"
+    return 1
+  fi
+}
+
+if [ "$mode" = "check" ]; then
+  check_layout_inputs
+  describe_layout
+  printf '%s\n' "Plan check completed without requiring generated artifacts or invoking Swift, Xcode, cargo, or UniFFI."
+  exit 0
+fi
+
+if [ "$mode" = "artifacts" ]; then
+  check_layout_inputs
+  describe_layout
+  require_artifact_file "$swift_path"
+  require_artifact_file "$modulemap_path"
+  require_staticlib_or_xcframework
+  printf '%s\n' "Generated UniFFI handoff artifacts are present."
+  exit 0
+fi
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "error: UniFFI/iOS artifact generation requires macOS with Xcode toolchains."
+  printf '%s\n' "On Linux, run this script with --check-plan and run sh -n for syntax checks."
+  exit 2
+fi
+
+check_layout_inputs
+require_file "$uniffi_source"
+
+if ! command -v cargo >/dev/null 2>&1; then
+  printf '%s\n' "error: cargo was not found on PATH."
+  exit 127
+fi
+
+if ! command -v "$uniffi_bindgen" >/dev/null 2>&1; then
+  printf '%s\n' "error: $uniffi_bindgen was not found on PATH."
+  printf '%s\n' "Install UniFFI tooling or set UNIFFI_BINDGEN to the generator command."
+  exit 127
+fi
+
+if [ "$package_xcframework" -eq 1 ] && ! command -v xcodebuild >/dev/null 2>&1; then
+  printf '%s\n' "error: xcodebuild is required for --xcframework packaging."
+  exit 127
+fi
+
+mkdir -p "$generated_dir" "$artifacts_dir" "$headers_dir"
+
+printf '%s\n' "Generating Swift UniFFI bindings..."
+"$uniffi_bindgen" generate "$uniffi_source" --language swift --out-dir "$generated_dir"
+
+printf '%s\n' "Building Rust static libraries for iOS targets..."
+cargo build -p "$crate_name" --release --target aarch64-apple-ios
+cargo build -p "$crate_name" --release --target aarch64-apple-ios-sim
+
+device_lib="$repo_root/target/aarch64-apple-ios/release/lib${lib_name}.a"
+sim_lib="$repo_root/target/aarch64-apple-ios-sim/release/lib${lib_name}.a"
+
+require_file "$device_lib"
+require_file "$sim_lib"
+require_file "$swift_path"
+require_file "$modulemap_path"
+
+if [ "$package_xcframework" -eq 1 ]; then
+  rm -rf "$xcframework_path"
+  xcodebuild -create-xcframework \
+    -library "$device_lib" -headers "$headers_dir" \
+    -library "$sim_lib" -headers "$headers_dir" \
+    -output "$xcframework_path"
+else
+  cp "$device_lib" "$staticlib_path"
+fi
+
+printf '%s\n' "Generated UniFFI handoff artifacts."
+printf '%s\n' "Run:"
+printf '%s\n' "  ios/DeepSeekMobileDemo/Scripts/verify-macos --check-uniffi-layout"

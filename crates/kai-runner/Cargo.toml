@@ -1,0 +1,19 @@
+[package]
+name = "kai-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lightweight target-computer runner scaffold for mobile remote tools"
+
+[dependencies]
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+deepseek-mobile-agent-core = { path = "../mobile-agent-core", version = "0.8.40" }
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+tower = "0.5.2"

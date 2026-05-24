@@ -1,0 +1,84 @@
+// UniFFI boundary for the Swift-facing JSON facade in uniffi_api.rs.
+//
+// This crate deliberately keeps the exposed mobile surface thin: Swift gets
+// structured connection/bootstrap/event records plus JSON strings for larger
+// payloads that already have stable serde coverage in Rust tests.
+
+namespace deepseek_mobile_agent_core {
+};
+
+[Traits=(Debug)]
+interface IosMobileCoreError {
+    string message();
+};
+
+dictionary IosConnectionProfile {
+    string id;
+    string label;
+    string status;
+    string mode;
+    sequence<string> tool_names;
+};
+
+dictionary IosBootstrapStep {
+    string step_id;
+    string instruction;
+    string command;
+    string expected_output;
+    boolean approval_required;
+};
+
+dictionary IosMobileEvent {
+    u64 seq;
+    string kind;
+    string payload_json;
+};
+
+interface IosMobileAgentCore {
+    constructor();
+
+    string create_session(string title);
+
+    [Throws=IosMobileCoreError] IosBootstrapStep homebrew_bootstrap_step(string session_id);
+
+    [Throws=IosMobileCoreError] IosMobileEvent submit_bootstrap_output(
+        string session_id,
+        string step_id,
+        string output
+    );
+
+    [Throws=IosMobileCoreError] string session_snapshot_json(string session_id);
+
+    [Throws=IosMobileCoreError] string bootstrap_install_steps_json();
+
+    [Throws=IosMobileCoreError] string runner_maintenance_audit_json(
+        string session_id,
+        string response_json
+    );
+
+    [Throws=IosMobileCoreError] string runner_maintenance_plan_json(
+        string session_id,
+        string response_json
+    );
+
+    [Throws=IosMobileCoreError] string browser_audit_json(
+        string session_id,
+        string response_json
+    );
+
+    [Throws=IosMobileCoreError] string capability_report_upgrade_json(
+        string id,
+        string label,
+        string report
+    );
+
+    IosConnectionProfile connection_bootstrap(string id, string label);
+
+    IosConnectionProfile connection_runner_from_tools(
+        string id,
+        string label,
+        sequence<string> tool_names
+    );
+
+    string connection_next_step(IosConnectionProfile profile);
+};
