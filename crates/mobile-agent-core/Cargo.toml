@@ -1,0 +1,25 @@
+[package]
+name = "deepseek-mobile-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable phone-side agent core for remote computer rescue workflows"
+
+[lib]
+name = "deepseek_mobile_agent_core"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uniffi = "0.31.1"
+uuid.workspace = true
+
+[build-dependencies]
+uniffi = { version = "0.31.1", features = ["build"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"
