@@ -283,40 +283,47 @@ impl AgentModel for DeepSeekAgentModel {
 }
 
 #[derive(Debug, Default)]
-pub struct ReqwestAgentHttpTransport {
-    client: reqwest::blocking::Client,
-}
+pub struct ReqwestAgentHttpTransport;
 
 impl ReqwestAgentHttpTransport {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::blocking::Client::new(),
-        }
+        Self
     }
 }
 
 impl AgentHttpTransport for ReqwestAgentHttpTransport {
     fn send(&self, request: AgentHttpRequest) -> Result<String, AgentModelError> {
-        let mut builder = self.client.post(&request.url).json(&request.body);
-        for (name, value) in request.headers {
-            builder = builder.header(name, value);
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::spawn(move || send_blocking_request(request))
+                .join()
+                .map_err(|_| AgentModelError::transport("request worker thread panicked"))?
+        } else {
+            send_blocking_request(request)
         }
-        let response = builder
-            .send()
-            .map_err(|source| AgentModelError::transport(format!("request failed: {source}")))?;
-        let status = response.status();
-        let body = response.text().map_err(|source| {
-            AgentModelError::transport(format!("read response failed: {source}"))
-        })?;
-
-        if !status.is_success() {
-            return Err(AgentModelError::transport(format!(
-                "chat completion failed with status {status}"
-            )));
-        }
-
-        Ok(body)
     }
+}
+
+fn send_blocking_request(request: AgentHttpRequest) -> Result<String, AgentModelError> {
+    let client = reqwest::blocking::Client::new();
+    let mut builder = client.post(&request.url).json(&request.body);
+    for (name, value) in request.headers {
+        builder = builder.header(name, value);
+    }
+    let response = builder
+        .send()
+        .map_err(|source| AgentModelError::transport(format!("request failed: {source}")))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|source| AgentModelError::transport(format!("read response failed: {source}")))?;
+
+    if !status.is_success() {
+        return Err(AgentModelError::transport(format!(
+            "chat completion failed with status {status}"
+        )));
+    }
+
+    Ok(body)
 }
 
 #[derive(Debug, Deserialize)]

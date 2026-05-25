@@ -214,6 +214,12 @@ fn deepseek_agent_model_error_messages_redact_api_key() {
     assert!(!debug.contains("real-secret-key"));
 }
 
+#[tokio::test]
+async fn deepseek_agent_model_can_be_dropped_inside_tokio_runtime() {
+    let model = DeepSeekAgentModel::new(deepseek_config());
+    drop(model);
+}
+
 #[test]
 fn mock_agent_model_status_is_browser_safe() {
     let model = MockAgentModel::new();
