@@ -133,8 +133,12 @@ impl MockAgentModel {
 impl AgentModel for MockAgentModel {
     fn complete(&self, request: &AgentModelRequest) -> Result<AgentModelResponse, AgentModelError> {
         let message = request.message.to_ascii_lowercase();
-        let command = if contains_any(&message, &["user", "identity", "who am i", "用户", "身份"])
-        {
+        let command = if contains_any(
+            &message,
+            &["update", "install", "opkg", "apt", "更新", "安装"],
+        ) {
+            Some("opkg update")
+        } else if contains_any(&message, &["user", "identity", "who am i", "用户", "身份"]) {
             Some("id")
         } else if contains_any(&message, &["disk", "space", "filesystem", "磁盘", "空间"]) {
             Some("df -h")

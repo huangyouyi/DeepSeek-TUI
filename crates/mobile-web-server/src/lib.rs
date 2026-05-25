@@ -11,7 +11,8 @@ pub mod types;
 
 pub use routes::{
     MobileWebServerConfig, app_router, app_router_with_access_token, app_router_with_config,
-    app_router_with_config_and_access_token, app_router_with_runner,
+    app_router_with_config_access_token_and_model, app_router_with_config_and_access_token,
+    app_router_with_config_and_model, app_router_with_runner,
 };
 pub use ssh_exec::{CommandRunner, SshCommandOutput, SystemSshCommandRunner};
 pub use state::AppState;

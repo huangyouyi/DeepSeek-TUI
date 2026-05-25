@@ -92,6 +92,7 @@ export type PendingApproval = {
   cwd?: string;
   created_at_ms: number;
   status: string;
+  agent_turn_id?: string;
 };
 
 export type AgentTurnRequest = {

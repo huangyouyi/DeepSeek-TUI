@@ -1,9 +1,11 @@
-use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
+use std::{net::SocketAddr, path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use deepseek_mobile_web_server::{
-    AppState, MobileWebServerConfig, SshTarget, app_router_with_config,
-    app_router_with_config_and_access_token,
+    AppState, MobileWebServerConfig, SshTarget,
+    agent_model::{AgentModel, DeepSeekAgentModel, MockAgentModel},
+    app_router_with_config_access_token_and_model, app_router_with_config_and_model,
+    model_config::{MobileModelConfig, MobileModelMode},
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -23,6 +25,10 @@ struct Args {
     ssh_port: u16,
     #[arg(long, default_value_t = false)]
     use_real_model: bool,
+    #[arg(long, value_parser = ["auto", "mock", "deepseek"])]
+    model_mode: Option<String>,
+    #[arg(long)]
+    model_config: Option<PathBuf>,
     #[arg(long)]
     static_dir: Option<PathBuf>,
     #[arg(long)]
@@ -47,6 +53,10 @@ async fn main() -> ExitCode {
 
 async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    let model_mode = resolve_model_mode(&args)?;
+    let model_config = load_model_config(model_mode, args.model_config.as_ref())?;
+    let model_status = model_config.redacted_status();
+    let model = build_model(model_config);
     let target = SshTarget {
         host: args.ssh_host,
         user: args.ssh_user,
@@ -58,8 +68,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     info!("lan url http://{}:{}", args.host, args.port);
     info!("ssh target {}@{}:{}", target.user, target.host, target.port);
     info!(
-        "model access {}",
-        if args.use_real_model { "real" } else { "mock" }
+        "model mode {} model {} api_key_present {}",
+        model_status.provider, model_status.model, model_status.api_key_present
     );
     info!(
         "access token {}",
@@ -82,10 +92,44 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         static_dir,
     };
     let app = if let Some(access_token) = args.access_token {
-        app_router_with_config_and_access_token(state, config, access_token)
+        app_router_with_config_access_token_and_model(state, config, access_token, model)
     } else {
-        app_router_with_config(state, config)
+        app_router_with_config_and_model(state, config, model)
     };
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn resolve_model_mode(args: &Args) -> Result<MobileModelMode, Box<dyn std::error::Error>> {
+    if args.use_real_model {
+        return Ok(MobileModelMode::Deepseek);
+    }
+    if let Some(mode) = &args.model_mode {
+        return Ok(mode.parse()?);
+    }
+    if let Ok(mode) = std::env::var("DEEPSEEK_MOBILE_MODEL_MODE")
+        && !mode.trim().is_empty()
+    {
+        return Ok(mode.parse()?);
+    }
+    Ok(MobileModelMode::Auto)
+}
+
+fn load_model_config(
+    mode: MobileModelMode,
+    path: Option<&PathBuf>,
+) -> Result<MobileModelConfig, Box<dyn std::error::Error>> {
+    if let Some(path) = path {
+        Ok(MobileModelConfig::load_from_path(path, mode)?)
+    } else {
+        Ok(MobileModelConfig::load_default(mode)?)
+    }
+}
+
+fn build_model(config: MobileModelConfig) -> Arc<dyn AgentModel> {
+    if config.provider == "mock" {
+        Arc::new(MockAgentModel::new())
+    } else {
+        Arc::new(DeepSeekAgentModel::new(config))
+    }
 }

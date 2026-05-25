@@ -113,6 +113,13 @@ impl PendingApproval {
             .get(&self.id)
             .cloned()
     }
+
+    pub(crate) fn set_agent_turn_id(&self, agent_turn_id: impl Into<String>) {
+        agent_approval_origins()
+            .lock()
+            .expect("agent approval origin mutex must not be poisoned")
+            .insert(self.id.clone(), agent_turn_id.into());
+    }
 }
 
 impl Serialize for PendingApproval {
