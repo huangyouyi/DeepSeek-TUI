@@ -20,7 +20,7 @@ use crate::{
     AppState, AuditEntry, CommandPrepareRequest, DiagnosticRequest, HealthResponse, Message,
     MessagePart, SessionSummary, SshTarget,
     approvals::{ApprovalError, ApprovalService},
-    diagnostics::{DiagnosticError, DiagnosticService},
+    diagnostics::{DiagnosticError, DiagnosticService, preset_diagnostics},
     events::{broadcast_event, event_stream},
     ssh_exec::{CommandRunner, SystemSshCommandRunner},
 };
@@ -100,6 +100,7 @@ fn app_router_inner(
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}/messages", get(list_messages))
         .route("/api/sessions/{id}/prompt", post(prompt_session))
+        .route("/api/diagnostics/presets", get(list_diagnostic_presets))
         .route("/api/diagnostics/run", post(run_diagnostic))
         .route("/api/commands/prepare", post(prepare_command))
         .route("/api/approvals/{id}/respond", post(respond_approval))
@@ -248,6 +249,10 @@ async fn list_messages(
 
 async fn list_audit(State(state): State<RouterState>) -> Json<Vec<AuditEntry>> {
     Json(state.app.audit_recent())
+}
+
+async fn list_diagnostic_presets() -> Json<Vec<crate::DiagnosticPreset>> {
+    Json(preset_diagnostics())
 }
 
 async fn run_diagnostic(

@@ -99,6 +99,24 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.target-form {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) 82px auto;
+}
+
+.target-form label {
+  color: #dce7ef;
+  min-width: 0;
+}
+
+.target-form input {
+  background: #ffffff;
+  min-height: 42px;
+  padding: 9px 10px;
+}
+
 .panel {
   background: #ffffff;
   border: 1px solid #dde3ea;
@@ -181,6 +199,7 @@ textarea {
 }
 
 .primary-button,
+.secondary-button,
 .danger-button {
   border: 0;
   border-radius: 8px;
@@ -191,6 +210,11 @@ textarea {
 
 .primary-button {
   background: #285f9f;
+}
+
+.secondary-button {
+  background: #516071;
+  white-space: nowrap;
 }
 
 .danger-button {
@@ -252,10 +276,19 @@ pre {
   line-height: 1.4;
   margin: 0;
   max-width: 100%;
+  min-width: 0;
   overflow-x: hidden;
   overflow-wrap: anywhere;
   padding: 10px;
   white-space: pre-wrap;
+  word-break: break-word;
+  word-wrap: break-word;
+}
+
+code,
+strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -270,11 +303,19 @@ pre {
   color: #661d28;
 }
 
+.busy-banner,
 .error-banner {
   border: 1px solid #efb5bd;
   border-radius: 8px;
   overflow-wrap: anywhere;
   padding: 10px 12px;
+}
+
+.busy-banner {
+  background: #fff6dc;
+  border-color: #e4c874;
+  color: #4e3e0d;
+  font-weight: 700;
 }
 
 .empty-state {
@@ -298,7 +339,8 @@ pre {
   }
 
   .status-grid,
-  .diagnostic-grid {
+  .diagnostic-grid,
+  .target-form {
     grid-template-columns: 1fr;
   }
 

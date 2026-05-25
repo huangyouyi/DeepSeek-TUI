@@ -59,6 +59,14 @@ pub struct DiagnosticResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticPreset {
+    pub key: String,
+    pub label: String,
+    pub command: String,
+    pub requires_approval: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandPrepareRequest {
     pub session_id: String,
     pub command: String,

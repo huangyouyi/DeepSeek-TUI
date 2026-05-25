@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::ssh_exec::{CommandRunError, CommandRunner, SshCommandOutput};
-use crate::{AppState, AuditEntry, DiagnosticRequest, DiagnosticResponse, ServerEvent};
+use crate::{
+    AppState, AuditEntry, DiagnosticPreset, DiagnosticRequest, DiagnosticResponse, ServerEvent,
+};
 
 #[derive(Clone, Debug)]
 pub struct DiagnosticService<R> {
@@ -154,6 +156,28 @@ pub fn preset_command(diagnostic: &str) -> Option<&'static str> {
         "working_directory" => Some("pwd"),
         _ => None,
     }
+}
+
+#[must_use]
+pub fn preset_diagnostics() -> Vec<DiagnosticPreset> {
+    [
+        ("system_info", "System info"),
+        ("current_user", "Current user"),
+        ("disk_usage", "Disk usage"),
+        ("memory", "Memory"),
+        ("network", "Network"),
+        ("working_directory", "Working directory"),
+    ]
+    .into_iter()
+    .map(|(key, label)| DiagnosticPreset {
+        key: key.to_string(),
+        label: label.to_string(),
+        command: preset_command(key)
+            .expect("diagnostic preset metadata must match preset command mapping")
+            .to_string(),
+        requires_approval: false,
+    })
+    .collect()
 }
 
 fn command_result(command: &str, output: &SshCommandOutput, duration_ms: u64) -> Value {

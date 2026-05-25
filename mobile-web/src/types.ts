@@ -34,6 +34,12 @@ export type SshTarget = {
   key_present: boolean;
 };
 
+export type SshTargetUpdateRequest = {
+  host: string;
+  user: string;
+  port: number;
+};
+
 export type DiagnosticKey =
   | "system_info"
   | "current_user"

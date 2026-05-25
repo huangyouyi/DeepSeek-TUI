@@ -193,3 +193,59 @@ async fn audit_recent_lists_seeded_entries() {
         }])
     );
 }
+
+#[tokio::test]
+async fn http_api_diagnostic_presets_return_read_only_metadata() {
+    let response = app_router(test_state(), false)
+        .oneshot(
+            Request::builder()
+                .uri("/api/diagnostics/presets")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response(response).await,
+        json!([
+            {
+                "key": "system_info",
+                "label": "System info",
+                "command": "uname -a",
+                "requires_approval": false
+            },
+            {
+                "key": "current_user",
+                "label": "Current user",
+                "command": "id",
+                "requires_approval": false
+            },
+            {
+                "key": "disk_usage",
+                "label": "Disk usage",
+                "command": "df -h",
+                "requires_approval": false
+            },
+            {
+                "key": "memory",
+                "label": "Memory",
+                "command": "free -m || cat /proc/meminfo",
+                "requires_approval": false
+            },
+            {
+                "key": "network",
+                "label": "Network",
+                "command": "ip addr || ifconfig",
+                "requires_approval": false
+            },
+            {
+                "key": "working_directory",
+                "label": "Working directory",
+                "command": "pwd",
+                "requires_approval": false
+            }
+        ])
+    );
+}

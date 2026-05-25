@@ -7,7 +7,8 @@ import {
   getSshTarget,
   prepareCommand,
   rejectCommand,
-  runDiagnostic
+  runDiagnostic,
+  updateSshTarget
 } from "./api";
 import { initialAppState, reduceEvent, withSseStatus } from "./state";
 import type { DiagnosticKey, ServerEvent } from "./types";
@@ -50,6 +51,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string>("");
   const [command, setCommand] = useState("");
   const [cwd, setCwd] = useState("");
+  const [targetForm, setTargetForm] = useState({ host: "", user: "", port: "22" });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,6 +104,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const target = state.connection.target;
+    if (target) {
+      setTargetForm({ host: target.host, user: target.user, port: String(target.port) });
+    }
+  }, [state.connection.target]);
+
+  useEffect(() => {
     dispatch({ type: "sse", status: "connecting" });
     const source = new EventSource("/event");
     const eventTypes: ServerEvent["type"][] = [
@@ -148,6 +157,52 @@ export default function App() {
     }
     return `${target.user}@${target.host}:${target.port}`;
   }, [state.connection.target]);
+
+  const busyMessage = useMemo(() => {
+    if (!busy) {
+      return null;
+    }
+    if (busy === "command") {
+      return "Preparing approval";
+    }
+    if (busy === "target") {
+      return "Saving target";
+    }
+    const diagnostic = diagnostics.find((item) => item.key === busy);
+    if (diagnostic) {
+      return `Running ${diagnostic.label}`;
+    }
+    const approval = state.pendingApprovals.find((item) => item.id === busy);
+    return approval ? "Sending approval response" : "Working";
+  }, [busy, state.pendingApprovals]);
+
+  async function handleTargetSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const host = targetForm.host.trim();
+    const user = targetForm.user.trim();
+    const port = Number(targetForm.port);
+
+    if (!host || !user || !Number.isInteger(port) || port < 1 || port > 65535) {
+      setError("Enter a host, user, and port from 1 to 65535.");
+      return;
+    }
+
+    setBusy("target");
+    setError(null);
+    try {
+      const target = await updateSshTarget({ host, user, port });
+      dispatch({ type: "target", target });
+      dispatch({
+        type: "event",
+        event: { type: "connection.updated", payload: { status: `target ${target.user}@${target.host}:${target.port}` } }
+      });
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function handleDiagnostic(key: DiagnosticKey) {
     const activeSessionId = sessionId || state.activeSessionId;
@@ -231,7 +286,55 @@ export default function App() {
           <StatusPill label="SSE" value={state.connection.sse} />
           <StatusPill label="Target" value={targetLabel} />
         </div>
+        <form className="target-form" onSubmit={handleTargetSave}>
+          <label>
+            Host
+            <input
+              autoCapitalize="none"
+              autoComplete="off"
+              autoCorrect="off"
+              onChange={(event) => setTargetForm((current) => ({ ...current, host: event.target.value }))}
+              placeholder="192.168.30.244"
+              spellCheck={false}
+              type="text"
+              value={targetForm.host}
+            />
+          </label>
+          <label>
+            User
+            <input
+              autoCapitalize="none"
+              autoComplete="username"
+              autoCorrect="off"
+              onChange={(event) => setTargetForm((current) => ({ ...current, user: event.target.value }))}
+              placeholder="root"
+              spellCheck={false}
+              type="text"
+              value={targetForm.user}
+            />
+          </label>
+          <label>
+            Port
+            <input
+              inputMode="numeric"
+              max="65535"
+              min="1"
+              onChange={(event) => setTargetForm((current) => ({ ...current, port: event.target.value }))}
+              type="number"
+              value={targetForm.port}
+            />
+          </label>
+          <button className="secondary-button" disabled={busy !== null} type="submit">
+            {busy === "target" ? "Saving" : "Save target"}
+          </button>
+        </form>
       </header>
+
+      {busyMessage ? (
+        <div className="busy-banner" aria-live="polite">
+          {busyMessage}
+        </div>
+      ) : null}
 
       {error ? <div className="error-banner">{error}</div> : null}
 
@@ -250,7 +353,7 @@ export default function App() {
               type="button"
             >
               <span>{diagnostic.label}</span>
-              <code>{diagnostic.command}</code>
+              <code>{busy === diagnostic.key ? "Running..." : diagnostic.command}</code>
             </button>
           ))}
         </div>
@@ -289,7 +392,7 @@ export default function App() {
             />
           </label>
           <button className="primary-button" disabled={busy !== null || !command.trim()} type="submit">
-            Request approval
+            {busy === "command" ? "Preparing" : "Request approval"}
           </button>
         </form>
       </section>
@@ -317,7 +420,7 @@ export default function App() {
                     onClick={() => handleApproval(approval.id, "approve_once")}
                     type="button"
                   >
-                    Approve once
+                    {busy === approval.id ? "Sending" : "Approve once"}
                   </button>
                   <button
                     className="danger-button"

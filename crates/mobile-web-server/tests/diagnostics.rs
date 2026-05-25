@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use deepseek_mobile_web_server::{
     AppState, DiagnosticRequest, SshTarget,
-    diagnostics::{DiagnosticError, DiagnosticService, preset_command},
+    diagnostics::{DiagnosticError, DiagnosticService, preset_command, preset_diagnostics},
     ssh_exec::{CommandRunner, SshCommandOutput},
 };
 
@@ -61,6 +61,18 @@ fn diagnostics_preset_mapping_is_exact() {
     assert_eq!(preset_command("network"), Some("ip addr || ifconfig"));
     assert_eq!(preset_command("working_directory"), Some("pwd"));
     assert_eq!(preset_command("other"), None);
+}
+
+#[test]
+fn diagnostics_presets_all_map_to_preset_commands() {
+    let presets = preset_diagnostics();
+
+    assert!(!presets.is_empty());
+    for preset in presets {
+        assert_eq!(preset_command(&preset.key), Some(preset.command.as_str()));
+        assert!(!preset.label.trim().is_empty());
+        assert!(!preset.requires_approval);
+    }
 }
 
 #[test]

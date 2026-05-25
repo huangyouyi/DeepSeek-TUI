@@ -9,7 +9,8 @@ import type {
   Message,
   PendingApproval,
   SessionSummary,
-  SshTarget
+  SshTarget,
+  SshTargetUpdateRequest
 } from "./types";
 
 export type ApiContext = {
@@ -49,6 +50,14 @@ export function getHealth(api?: ApiContext): Promise<HealthResponse> {
 
 export function getSshTarget(api?: ApiContext): Promise<SshTarget> {
   return requestJson<SshTarget>("/api/ssh/target", undefined, api);
+}
+
+export function updateSshTarget(input: SshTargetUpdateRequest, api?: ApiContext): Promise<SshTarget> {
+  return requestJson<SshTarget>(
+    "/api/ssh/target",
+    { method: "PUT", body: JSON.stringify(input) },
+    api
+  );
 }
 
 export function listSessions(api?: ApiContext): Promise<SessionSummary[]> {

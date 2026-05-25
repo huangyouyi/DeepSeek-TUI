@@ -90,6 +90,37 @@ Run the script smoke test without a real SSH host:
 python3 scripts/mobile_web_ssh_flow_simulator_smoke.py
 ```
 
+Create a Linux/LAN Web simulator evidence folder for a live server:
+
+```bash
+python3 scripts/mobile_web_ssh_evidence.py \
+  --server http://127.0.0.1:8788 \
+  --host linux-lab-host \
+  --auto-approve
+```
+
+The helper writes a dated folder under `validation/mobile-web-ssh/` by default,
+named like `YYYY-MM-DD-mobile-web-ssh-linux-lab-host/`. It creates `README.md`,
+`evidence-log.md`, `environment.md`, `commands.log`, `results.md`, and tracked
+`logs/`, `screenshots/`, and `failures/` placeholders. It then runs
+`scripts/mobile_web_ssh_smoke.py` and
+`scripts/mobile_web_ssh_flow_simulator.py` against `--server`, captures command
+output, and exits nonzero if either command fails.
+
+Preview the planned paths and commands without writing files:
+
+```bash
+python3 scripts/mobile_web_ssh_evidence.py \
+  --server http://127.0.0.1:8788 \
+  --host linux-lab-host \
+  --date 2026-05-25 \
+  --json \
+  --dry-run
+```
+
+This evidence helper is Linux/LAN Web simulator evidence only. It is not iOS,
+macOS, Windows, or real mobile-platform evidence.
+
 ## Evidence Boundary
 
 Passing this simulator means:

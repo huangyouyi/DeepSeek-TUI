@@ -13,8 +13,8 @@ pub use ssh_exec::{CommandRunner, SshCommandOutput, SystemSshCommandRunner};
 pub use state::AppState;
 pub use types::{
     ApiErrorBody, ApprovalRespondRequest, ApprovalResponse, AuditEntry, CommandPrepareRequest,
-    DiagnosticRequest, DiagnosticResponse, HealthResponse, Message, MessagePart, PendingApproval,
-    ServerEvent, SessionSummary, SshTarget,
+    DiagnosticPreset, DiagnosticRequest, DiagnosticResponse, HealthResponse, Message, MessagePart,
+    PendingApproval, ServerEvent, SessionSummary, SshTarget,
 };
 
 #[cfg(test)]
