@@ -9,6 +9,7 @@ import {
   prepareCommand,
   rejectCommand,
   runDiagnostic,
+  sendAgentTurn,
   updateSshTarget
 } from "./api";
 
@@ -29,7 +30,8 @@ describe("api client", () => {
       .mockResolvedValueOnce(jsonResponse({ status: "approved" }))
       .mockResolvedValueOnce(jsonResponse({ status: "rejected" }))
       .mockResolvedValueOnce(jsonResponse({ host: "192.168.30.244", user: "root", port: 2222 }))
-      .mockResolvedValueOnce(jsonResponse({ status: "reachable", command: "true" }));
+      .mockResolvedValueOnce(jsonResponse({ status: "reachable", command: "true" }))
+      .mockResolvedValueOnce(jsonResponse({ session_id: "session-1", assistant_text: "Linux", pending_approvals: [] }));
 
     const api = { fetch: fetchMock as unknown as typeof fetch };
 
@@ -41,6 +43,7 @@ describe("api client", () => {
     await rejectCommand("approval-2", api);
     await updateSshTarget({ host: "192.168.30.244", user: "root", port: 2222 }, api);
     await checkSshTarget(api);
+    await sendAgentTurn("session-1", "请问当前运行在什么系统？", api);
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/sessions",
@@ -50,7 +53,8 @@ describe("api client", () => {
       "/api/approvals/approval-1/respond",
       "/api/approvals/approval-2/respond",
       "/api/ssh/target",
-      "/api/ssh/check"
+      "/api/ssh/check",
+      "/api/sessions/session-1/agent-turn"
     ]);
 
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
@@ -75,6 +79,10 @@ describe("api client", () => {
       port: 2222
     });
     expect(fetchMock.mock.calls[7][1].method).toBe("POST");
+    expect(fetchMock.mock.calls[8][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[8][1].body)).toEqual({
+      message: "请问当前运行在什么系统？"
+    });
   });
 
   it("loads diagnostic presets from the server", async () => {

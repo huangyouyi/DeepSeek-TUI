@@ -1,4 +1,6 @@
 import type {
+  AgentTurnRequest,
+  AgentTurnResponse,
   ApprovalResponse,
   AuditEntry,
   CommandPrepareRequest,
@@ -21,7 +23,7 @@ export type ApiContext = {
 };
 
 const defaultApi: ApiContext = {
-  fetch: globalThis.fetch.bind(globalThis)
+  fetch: ((input, init) => globalThis.fetch(input, init)) as typeof fetch
 };
 
 export const ACCESS_TOKEN_STORAGE_KEY = "deepseek.mobileWeb.accessToken";
@@ -160,6 +162,16 @@ export function prepareCommand(
   };
 
   return requestJson<PendingApproval>("/api/commands/prepare", { method: "POST", body: JSON.stringify(body) }, api);
+}
+
+export function sendAgentTurn(sessionId: string, message: string, api?: ApiContext): Promise<AgentTurnResponse> {
+  const body: AgentTurnRequest = { message };
+
+  return requestJson<AgentTurnResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/agent-turn`,
+    { method: "POST", body: JSON.stringify(body) },
+    api
+  );
 }
 
 export function approveCommand(id: string, api?: ApiContext): Promise<ApprovalResponse> {

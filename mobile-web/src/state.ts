@@ -12,7 +12,7 @@ export type SseStatus = "connecting" | "connected" | "disconnected" | "error";
 
 export type TimelineEntry = {
   id: string;
-  kind: "session" | "message" | "tool" | "stdout" | "stderr" | "audit" | "connection";
+  kind: "session" | "message" | "user-message" | "assistant-message" | "tool" | "stdout" | "stderr" | "audit" | "connection";
   title: string;
   text: string;
   createdAtMs: number;
@@ -95,6 +95,19 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
     }
     case "message.updated":
     case "message.part.updated": {
+      const payload = objectPayload(event.payload);
+      const role = stringField(payload, "role", "");
+      if (role === "user" || role === "assistant") {
+        return {
+          ...state,
+          timeline: prependTimeline(state.timeline, {
+            kind: role === "user" ? "user-message" : "assistant-message",
+            title: role === "user" ? "You" : "Assistant",
+            text: messageText(payload, event.payload)
+          })
+        };
+      }
+
       return {
         ...state,
         timeline: prependTimeline(state.timeline, {
@@ -217,4 +230,35 @@ function stringifyPayload(payload: unknown): string {
   } catch {
     return String(payload);
   }
+}
+
+function messageText(payload: Record<string, unknown>, fallbackPayload: unknown): string {
+  const text = payload.text;
+  if (typeof text === "string") {
+    return text;
+  }
+
+  const content = payload.content;
+  if (typeof content === "string") {
+    return content;
+  }
+
+  const parts = payload.parts;
+  if (Array.isArray(parts)) {
+    const joined = parts
+      .map((part) => {
+        if (typeof part !== "object" || part === null) {
+          return "";
+        }
+        const value = (part as Record<string, unknown>).text;
+        return typeof value === "string" ? value : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (joined) {
+      return joined;
+    }
+  }
+
+  return stringifyPayload(fallbackPayload);
 }

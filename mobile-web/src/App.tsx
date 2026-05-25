@@ -13,6 +13,7 @@ import {
   rejectCommand,
   runDiagnostic,
   saveAccessToken,
+  sendAgentTurn,
   updateSshTarget
 } from "./api";
 import {
@@ -51,6 +52,7 @@ function appReducer(state: typeof initialAppState, action: LocalAction): typeof 
 export default function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState);
   const [sessionId, setSessionId] = useState<string>("");
+  const [agentMessage, setAgentMessage] = useState("");
   const [command, setCommand] = useState("");
   const [cwd, setCwd] = useState("");
   const [targetForm, setTargetForm] = useState({ host: "", user: "", port: "22" });
@@ -191,6 +193,9 @@ export default function App() {
     if (busy === "command") {
       return "Preparing approval";
     }
+    if (busy === "agent") {
+      return "Waiting for Agent response";
+    }
     if (busy === "target") {
       return "Saving target";
     }
@@ -291,6 +296,37 @@ export default function App() {
       });
       dispatch({ type: "event", event: { type: "approval.asked", payload: approval } });
       setCommand("");
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleAgentTurn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const activeSessionId = sessionId || state.activeSessionId;
+    const trimmed = agentMessage.trim();
+
+    if (!activeSessionId || !trimmed || busy === "agent") {
+      return;
+    }
+
+    setBusy("agent");
+    setError(null);
+    dispatch({ type: "event", event: { type: "message.updated", payload: { role: "user", text: trimmed } } });
+    try {
+      const response = await sendAgentTurn(activeSessionId, trimmed);
+      if (response.assistant_text.trim()) {
+        dispatch({
+          type: "event",
+          event: { type: "message.updated", payload: { role: "assistant", text: response.assistant_text } }
+        });
+      }
+      response.pending_approvals.forEach((approval) => {
+        dispatch({ type: "event", event: { type: "approval.asked", payload: approval } });
+      });
+      setAgentMessage("");
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -415,61 +451,27 @@ export default function App() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="panel diagnostics-panel" aria-labelledby="diagnostics-heading">
+      <section className="panel agent-panel" aria-labelledby="agent-heading">
         <div className="section-heading">
-          <h2 id="diagnostics-heading">Diagnostics</h2>
-          <span>{diagnostics.length} presets</span>
+          <h2 id="agent-heading">Agent Chat</h2>
+          <span>remote Linux assistant</span>
         </div>
-        <div className="diagnostic-grid">
-          {diagnostics.map((diagnostic) => (
-            <button
-              className="diagnostic-button"
-              disabled={busy !== null}
-              key={diagnostic.key}
-              onClick={() => handleDiagnostic(diagnostic.key)}
-              type="button"
-            >
-              <span>{diagnostic.label}</span>
-              <code>{busy === diagnostic.key ? "Running..." : diagnostic.command}</code>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel command-panel" aria-labelledby="command-heading">
-        <div className="section-heading">
-          <h2 id="command-heading">Advanced Command</h2>
-          <span>approval required</span>
-        </div>
-        <form onSubmit={handleCommand}>
+        <form className="agent-form" onSubmit={handleAgentTurn}>
           <label>
-            Command
+            Message
             <textarea
-              autoCapitalize="none"
+              autoCapitalize="sentences"
               autoComplete="off"
-              autoCorrect="off"
-              onChange={(event) => setCommand(event.target.value)}
-              placeholder="journalctl -u ssh --no-pager | tail -80"
-              rows={4}
-              spellCheck={false}
-              value={command}
+              autoCorrect="on"
+              disabled={busy === "agent"}
+              onChange={(event) => setAgentMessage(event.target.value)}
+              placeholder="Ask the remote Linux device..."
+              rows={3}
+              value={agentMessage}
             />
           </label>
-          <label>
-            Working directory
-            <input
-              autoCapitalize="none"
-              autoComplete="off"
-              autoCorrect="off"
-              onChange={(event) => setCwd(event.target.value)}
-              placeholder="/root"
-              spellCheck={false}
-              type="text"
-              value={cwd}
-            />
-          </label>
-          <button className="primary-button" disabled={busy !== null || !command.trim()} type="submit">
-            {busy === "command" ? "Preparing" : "Request approval"}
+          <button className="primary-button agent-send-button" disabled={busy === "agent" || !agentMessage.trim()} type="submit">
+            {busy === "agent" ? "Sending" : "Send"}
           </button>
         </form>
       </section>
@@ -512,6 +514,65 @@ export default function App() {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="panel diagnostics-panel secondary-panel" aria-labelledby="diagnostics-heading">
+        <div className="section-heading">
+          <h2 id="diagnostics-heading">Diagnostics</h2>
+          <span>{diagnostics.length} presets</span>
+        </div>
+        <div className="diagnostic-grid">
+          {diagnostics.map((diagnostic) => (
+            <button
+              className="diagnostic-button"
+              disabled={busy !== null}
+              key={diagnostic.key}
+              onClick={() => handleDiagnostic(diagnostic.key)}
+              type="button"
+            >
+              <span>{diagnostic.label}</span>
+              <code>{busy === diagnostic.key ? "Running..." : diagnostic.command}</code>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel command-panel secondary-panel" aria-labelledby="command-heading">
+        <div className="section-heading">
+          <h2 id="command-heading">Advanced Command</h2>
+          <span>approval required</span>
+        </div>
+        <form onSubmit={handleCommand}>
+          <label>
+            Command
+            <textarea
+              autoCapitalize="none"
+              autoComplete="off"
+              autoCorrect="off"
+              onChange={(event) => setCommand(event.target.value)}
+              placeholder="journalctl -u ssh --no-pager | tail -80"
+              rows={4}
+              spellCheck={false}
+              value={command}
+            />
+          </label>
+          <label>
+            Working directory
+            <input
+              autoCapitalize="none"
+              autoComplete="off"
+              autoCorrect="off"
+              onChange={(event) => setCwd(event.target.value)}
+              placeholder="/root"
+              spellCheck={false}
+              type="text"
+              value={cwd}
+            />
+          </label>
+          <button className="primary-button" disabled={busy !== null || !command.trim()} type="submit">
+            {busy === "command" ? "Preparing" : "Request approval"}
+          </button>
+        </form>
       </section>
 
       <section className="panel timeline-panel" aria-labelledby="timeline-heading">

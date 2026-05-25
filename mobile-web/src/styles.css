@@ -176,6 +176,20 @@ h2 {
   padding: 14px;
 }
 
+.agent-panel {
+  border-color: #b8cbe2;
+  box-shadow: 0 4px 16px rgba(40, 95, 159, 0.1);
+}
+
+.secondary-panel {
+  background: #fbfcfd;
+  box-shadow: none;
+}
+
+.secondary-panel h2 {
+  color: #4d5b68;
+}
+
 .section-heading,
 summary {
   align-items: center;
@@ -224,6 +238,23 @@ details[open] summary {
 form {
   display: grid;
   gap: 10px;
+}
+
+.agent-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.agent-form label {
+  min-width: 0;
+}
+
+.agent-form textarea {
+  min-height: 96px;
+}
+
+.agent-send-button {
+  align-self: end;
+  min-width: 92px;
 }
 
 label {
@@ -318,6 +349,10 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.approval-actions button {
+  min-height: 44px;
+}
+
 pre {
   background: #111820;
   border-radius: 6px;
@@ -346,6 +381,27 @@ strong {
 .timeline-entry.stdout pre {
   background: #102a21;
   color: #e9fff6;
+}
+
+.timeline-entry.user-message {
+  background: #eef5ff;
+  border-color: #b8cbe2;
+  margin-left: 22px;
+}
+
+.timeline-entry.assistant-message {
+  background: #f2fbf7;
+  border-color: #b7dfce;
+  margin-right: 22px;
+}
+
+.timeline-entry.user-message pre {
+  background: #17365f;
+}
+
+.timeline-entry.assistant-message pre {
+  background: #12372b;
+  color: #effff8;
 }
 
 .timeline-entry.stderr pre,
@@ -391,6 +447,7 @@ strong {
 
   .status-grid,
   .diagnostic-grid,
+  .agent-form,
   .access-token-form,
   .ssh-check-row,
   .target-form {
