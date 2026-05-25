@@ -119,6 +119,45 @@ describe("App agent chat", () => {
     expect(screen.getAllByText("uname -a").length).toBeGreaterThan(0);
   });
 
+  it("shows the approval response summary without waiting for sse", async () => {
+    const fetchMock = bootstrapFetch(jsonResponse({
+      session_id: "session-1",
+      turn_id: "turn-1",
+      status: "awaiting_approval",
+      assistant_text: "I need approval before running that command.",
+      executed_tools: [],
+      pending_approvals: [{
+        id: "approval-1",
+        session_id: "session-1",
+        command: "opkg update",
+        created_at_ms: 100,
+        status: "pending"
+      }]
+    }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      approval: {
+        id: "approval-1",
+        session_id: "session-1",
+        command: "opkg update",
+        created_at_ms: 100,
+        status: "approved"
+      },
+      status: "approved",
+      result: {
+        summary: "本轮远程命令已全部执行完成。结果如下：\n\n1. opkg update completed"
+      }
+    }));
+
+    render(<App />);
+
+    const composer = await screen.findByPlaceholderText("Ask the remote Linux device...");
+    fireEvent.change(composer, { target: { value: "请更新软件包索引" } });
+    fireEvent.submit(composer.closest("form")!);
+    fireEvent.click(await screen.findByRole("button", { name: "Approve once" }));
+
+    expect(await screen.findAllByText(/本轮远程命令已全部执行完成/)).not.toHaveLength(0);
+  });
+
   it("disables the send button while an agent turn is pending", async () => {
     let resolveAgentTurn: (response: Response) => void = () => undefined;
     const agentTurn = new Promise<Response>((resolve) => {

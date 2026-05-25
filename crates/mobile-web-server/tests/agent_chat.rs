@@ -216,3 +216,62 @@ async fn agent_turn_high_risk_tool_request_creates_pending_approval_without_exec
     );
     assert!(runner.calls().is_empty());
 }
+
+#[tokio::test]
+async fn agent_turn_high_risk_approval_returns_final_assistant_summary() {
+    let state = test_state();
+    let runner = FakeRunner::new();
+    let app = app_router_with_runner(state.clone(), false, runner.clone());
+    let session_id = create_session(app.clone()).await;
+
+    let turn_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/sessions/{session_id}/agent-turn"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"message": "请更新软件包索引"}).to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(turn_response.status(), StatusCode::OK);
+    let turn_body = json_response(turn_response).await;
+    let approval_id = turn_body["pending_approvals"][0]["id"]
+        .as_str()
+        .expect("approval id");
+
+    let approved = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/approvals/{approval_id}/respond"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"response": "approve_once"}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(approved.status(), StatusCode::OK);
+    let approved_body = json_response(approved).await;
+    assert_eq!(approved_body["status"], "approved");
+    assert!(
+        approved_body["result"]["summary"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Approved command `opkg update`")
+    );
+    assert!(
+        state
+            .messages(&session_id)
+            .last()
+            .and_then(|message| message.parts[0].text.as_deref())
+            .unwrap_or("")
+            .contains("本轮远程命令已全部执行完成")
+    );
+    assert_eq!(runner.calls(), vec!["opkg update"]);
+}

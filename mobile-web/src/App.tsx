@@ -350,6 +350,13 @@ export default function App() {
           payload: { id, status: result.status }
         }
       });
+      const summary = approvalResponseSummary(result.result);
+      if (summary) {
+        dispatch({
+          type: "event",
+          event: { type: "message.updated", payload: { role: "assistant", text: summary } }
+        });
+      }
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -660,6 +667,15 @@ function StatusPill({ label, value }: { label: string; value: string }) {
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected request failure";
+}
+
+function approvalResponseSummary(result: unknown): string {
+  if (!result || typeof result !== "object") {
+    return "";
+  }
+  const record = result as Record<string, unknown>;
+  const text = record.assistant_text ?? record.summary;
+  return typeof text === "string" ? text.trim() : "";
 }
 
 function formatSshCheckResult(result: SshCheckResponse): string {

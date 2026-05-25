@@ -63,7 +63,7 @@ where
             "reject" => {
                 approval.status = "rejected".to_string();
                 append_agent_rejection_summary(state, &approval);
-                append_agent_turn_final_summary_if_complete(state, &approval);
+                let _ = append_agent_turn_final_summary_if_complete(state, &approval);
                 state.push_audit(approval_audit(&approval, "rejected", json!({})));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
@@ -74,10 +74,13 @@ where
             }
             "approve_once" => {
                 let output = self.execute_approval(state, &approval)?;
-                let result = command_result(&approval.command, &output);
+                let summary = approved_agent_summary(&approval.command, &output);
                 approval.status = "approved".to_string();
-                append_agent_approval_summary(state, &approval, &output);
-                append_agent_turn_final_summary_if_complete(state, &approval);
+                append_agent_approval_summary(state, &approval, summary);
+                let assistant_summary =
+                    append_agent_turn_final_summary_if_complete(state, &approval)
+                        .unwrap_or_else(|| approved_agent_summary(&approval.command, &output));
+                let result = command_result(&approval.command, &output, &assistant_summary);
                 state.push_audit(approval_audit(&approval, "approved", result.clone()));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
@@ -202,20 +205,11 @@ fn approval_audit(approval: &PendingApproval, action: &str, result: Value) -> Au
     }
 }
 
-fn append_agent_approval_summary(
-    state: &AppState,
-    approval: &PendingApproval,
-    output: &SshCommandOutput,
-) {
+fn append_agent_approval_summary(state: &AppState, approval: &PendingApproval, summary: String) {
     let Some(agent_turn_id) = approval.agent_turn_id() else {
         return;
     };
-    append_agent_summary_message(
-        state,
-        approval,
-        agent_turn_id,
-        approved_agent_summary(&approval.command, output),
-    );
+    append_agent_summary_message(state, approval, agent_turn_id, summary);
 }
 
 fn append_agent_rejection_summary(state: &AppState, approval: &PendingApproval) {
@@ -263,18 +257,20 @@ fn append_agent_summary_message(
     );
 }
 
-fn append_agent_turn_final_summary_if_complete(state: &AppState, approval: &PendingApproval) {
-    let Some(agent_turn_id) = approval.agent_turn_id() else {
-        return;
-    };
+fn append_agent_turn_final_summary_if_complete(
+    state: &AppState,
+    approval: &PendingApproval,
+) -> Option<String> {
+    let agent_turn_id = approval.agent_turn_id()?;
     let has_remaining_turn_approvals = state
         .pending_approvals()
         .into_iter()
         .any(|pending| pending.agent_turn_id().as_deref() == Some(agent_turn_id.as_str()));
     if has_remaining_turn_approvals {
-        return;
+        return None;
     }
 
+    let final_summary = final_agent_turn_summary(state, &approval.session_id, &agent_turn_id);
     let message = Message {
         id: format!("message-{}", Uuid::new_v4()),
         session_id: approval.session_id.clone(),
@@ -283,7 +279,7 @@ fn append_agent_turn_final_summary_if_complete(state: &AppState, approval: &Pend
         parts: vec![MessagePart {
             id: format!("part-{}", Uuid::new_v4()),
             kind: "text".to_string(),
-            text: Some("本轮所有审批已处理完成。".to_string()),
+            text: Some(final_summary.clone()),
             data: json!({
                 "agent_turn_id": agent_turn_id,
                 "status": "completed",
@@ -305,6 +301,37 @@ fn append_agent_turn_final_summary_if_complete(state: &AppState, approval: &Pend
             "status": "completed",
         }),
     );
+    Some(final_summary)
+}
+
+fn final_agent_turn_summary(state: &AppState, session_id: &str, agent_turn_id: &str) -> String {
+    let summaries = state
+        .messages(session_id)
+        .into_iter()
+        .flat_map(|message| message.parts)
+        .filter(|part| {
+            part.data.get("agent_turn_id").and_then(Value::as_str) == Some(agent_turn_id)
+                && part
+                    .data
+                    .get("approval_id")
+                    .and_then(Value::as_str)
+                    .is_some()
+        })
+        .filter_map(|part| part.text)
+        .collect::<Vec<_>>();
+
+    if summaries.is_empty() {
+        return "本轮远程命令已全部执行完成。".to_string();
+    }
+
+    let mut text = "本轮远程命令已全部执行完成。结果如下：".to_string();
+    for (index, summary) in summaries.iter().enumerate() {
+        text.push_str("\n\n");
+        text.push_str(&(index + 1).to_string());
+        text.push_str(". ");
+        text.push_str(summary.trim_end());
+    }
+    text
 }
 
 fn approved_agent_summary(command: &str, output: &SshCommandOutput) -> String {
@@ -327,7 +354,7 @@ fn approved_agent_summary(command: &str, output: &SshCommandOutput) -> String {
     summary
 }
 
-fn command_result(command: &str, output: &SshCommandOutput) -> Value {
+fn command_result(command: &str, output: &SshCommandOutput, summary: &str) -> Value {
     json!({
         "command": command,
         "stdout": redact_text(&output.stdout),
@@ -335,6 +362,8 @@ fn command_result(command: &str, output: &SshCommandOutput) -> Value {
         "exit_code": output.exit_code,
         "duration_ms": duration_ms(output.duration),
         "timed_out": output.timed_out,
+        "summary": summary,
+        "assistant_text": summary,
     })
 }
 

@@ -95,7 +95,13 @@ fn agent_approval_summary_approve_once_appends_assistant_command_summary() {
     );
     assert_eq!(
         messages[1].parts[0].text.as_deref(),
-        Some("本轮所有审批已处理完成。")
+        Some(
+            "本轮远程命令已全部执行完成。结果如下：\n\n1. Approved command `uptime` completed with exit code 0.\nstdout:\nran uptime"
+        )
+    );
+    assert_eq!(
+        response.result["summary"],
+        "本轮远程命令已全部执行完成。结果如下：\n\n1. Approved command `uptime` completed with exit code 0.\nstdout:\nran uptime"
     );
 }
 
@@ -125,7 +131,9 @@ fn agent_approval_summary_reject_appends_assistant_not_executed_summary() {
     );
     assert_eq!(
         messages[1].parts[0].text.as_deref(),
-        Some("本轮所有审批已处理完成。")
+        Some(
+            "本轮远程命令已全部执行完成。结果如下：\n\n1. Rejected command `systemctl restart ssh`; it was not executed."
+        )
     );
 }
 
@@ -202,6 +210,8 @@ fn agent_approval_summary_waits_for_all_same_turn_approvals_before_final_answer(
     );
     assert_eq!(
         messages[2].parts[0].text.as_deref(),
-        Some("本轮所有审批已处理完成。")
+        Some(
+            "本轮远程命令已全部执行完成。结果如下：\n\n1. Approved command `uname -a` completed with exit code 0.\nstdout:\nran uname -a\n\n2. Approved command `df -h` completed with exit code 0.\nstdout:\nran df -h"
+        )
     );
 }
