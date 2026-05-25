@@ -87,11 +87,15 @@ fn agent_approval_summary_approve_once_appends_assistant_command_summary() {
     assert_eq!(response.status, "approved");
     assert_eq!(runner.calls(), vec!["uptime"]);
     let messages = state.messages("session-1");
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, "assistant");
     assert_eq!(
         messages[0].parts[0].text.as_deref(),
         Some("Approved command `uptime` completed with exit code 0.\nstdout:\nran uptime\n")
+    );
+    assert_eq!(
+        messages[1].parts[0].text.as_deref(),
+        Some("本轮所有审批已处理完成。")
     );
 }
 
@@ -114,10 +118,14 @@ fn agent_approval_summary_reject_appends_assistant_not_executed_summary() {
     assert_eq!(response.status, "rejected");
     assert!(runner.calls().is_empty());
     let messages = state.messages("session-1");
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(
         messages[0].parts[0].text.as_deref(),
         Some("Rejected command `systemctl restart ssh`; it was not executed.")
+    );
+    assert_eq!(
+        messages[1].parts[0].text.as_deref(),
+        Some("本轮所有审批已处理完成。")
     );
 }
 
@@ -145,5 +153,55 @@ fn agent_approval_summary_replay_still_returns_not_found_without_extra_summary()
 
     assert!(replay.is_err());
     assert_eq!(runner.calls(), vec!["pwd"]);
-    assert_eq!(state.messages("session-1").len(), 1);
+    assert_eq!(state.messages("session-1").len(), 2);
+}
+
+#[test]
+fn agent_approval_summary_waits_for_all_same_turn_approvals_before_final_answer() {
+    let state = test_state();
+    let runner = FakeRunner::new();
+    let service = ApprovalService::new(runner.clone());
+    state.insert_pending_approval(agent_approval("approval-1", "uname -a"));
+    state.insert_pending_approval(agent_approval("approval-2", "df -h"));
+
+    service
+        .respond(
+            &state,
+            "approval-1",
+            serde_json::from_value(json!({"response": "approve_once"}))
+                .expect("request must deserialize"),
+        )
+        .expect("first approval must succeed");
+    let messages = state.messages("session-1");
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].parts[0]
+            .text
+            .as_deref()
+            .unwrap_or("")
+            .contains("Approved command `uname -a`")
+    );
+
+    service
+        .respond(
+            &state,
+            "approval-2",
+            serde_json::from_value(json!({"response": "approve_once"}))
+                .expect("request must deserialize"),
+        )
+        .expect("second approval must succeed");
+
+    let messages = state.messages("session-1");
+    assert_eq!(messages.len(), 3);
+    assert!(
+        messages[1].parts[0]
+            .text
+            .as_deref()
+            .unwrap_or("")
+            .contains("Approved command `df -h`")
+    );
+    assert_eq!(
+        messages[2].parts[0].text.as_deref(),
+        Some("本轮所有审批已处理完成。")
+    );
 }

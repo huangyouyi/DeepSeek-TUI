@@ -63,6 +63,7 @@ where
             "reject" => {
                 approval.status = "rejected".to_string();
                 append_agent_rejection_summary(state, &approval);
+                append_agent_turn_final_summary_if_complete(state, &approval);
                 state.push_audit(approval_audit(&approval, "rejected", json!({})));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
@@ -76,6 +77,7 @@ where
                 let result = command_result(&approval.command, &output);
                 approval.status = "approved".to_string();
                 append_agent_approval_summary(state, &approval, &output);
+                append_agent_turn_final_summary_if_complete(state, &approval);
                 state.push_audit(approval_audit(&approval, "approved", result.clone()));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
@@ -258,6 +260,50 @@ fn append_agent_summary_message(
         state,
         "message.updated",
         serde_json::to_value(&message).expect("message must serialize"),
+    );
+}
+
+fn append_agent_turn_final_summary_if_complete(state: &AppState, approval: &PendingApproval) {
+    let Some(agent_turn_id) = approval.agent_turn_id() else {
+        return;
+    };
+    let has_remaining_turn_approvals = state
+        .pending_approvals()
+        .into_iter()
+        .any(|pending| pending.agent_turn_id().as_deref() == Some(agent_turn_id.as_str()));
+    if has_remaining_turn_approvals {
+        return;
+    }
+
+    let message = Message {
+        id: format!("message-{}", Uuid::new_v4()),
+        session_id: approval.session_id.clone(),
+        role: "assistant".to_string(),
+        created_at_ms: now_ms(),
+        parts: vec![MessagePart {
+            id: format!("part-{}", Uuid::new_v4()),
+            kind: "text".to_string(),
+            text: Some("本轮所有审批已处理完成。".to_string()),
+            data: json!({
+                "agent_turn_id": agent_turn_id,
+                "status": "completed",
+            }),
+        }],
+    };
+    state.push_message(message.clone());
+    broadcast_event(
+        state,
+        "message.updated",
+        serde_json::to_value(&message).expect("message must serialize"),
+    );
+    broadcast_event(
+        state,
+        "assistant.completed",
+        json!({
+            "session_id": approval.session_id,
+            "turn_id": agent_turn_id,
+            "status": "completed",
+        }),
     );
 }
 
