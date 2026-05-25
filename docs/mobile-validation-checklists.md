@@ -139,10 +139,26 @@ If the Rust server was started with `--access-token <token>`, pass the same
 token to both script checks with `--access-token <token>`. The evidence helper
 redacts that argument in `commands.log`.
 
+For the final repeatable Linux/Web/Rust/SSH control-chain verification, start
+the Rust server first, then run one evidence command:
+
+```bash
+python3 scripts/mobile_web_ssh_evidence.py \
+  --server http://127.0.0.1:8788 \
+  --host linux-web-ssh-control-chain \
+  --auto-approve \
+  --write-plan-draft
+```
+
+If authorization is enabled, append `--access-token "$MOBILE_WEB_TOKEN"`. This
+creates the dated Linux/LAN Web simulator evidence bundle and writes
+`plan-update-draft.md` from the captured results.
+
 Expected result:
 
 - `/health`, `/event`, `/api/ssh/target`, `/api/sessions`, and
   `/api/audit/recent` respond.
+- `/api/ssh/check` reports target reachability without an approval prompt.
 - A preset diagnostic executes over SSH.
 - An advanced command can be rejected without execution.
 - A second advanced command can be approved once and executed.

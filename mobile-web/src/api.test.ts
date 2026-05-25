@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   approveCommand,
   buildEventUrl,
+  checkSshTarget,
   createSession,
   getDiagnosticPresets,
   listMessages,
@@ -27,7 +28,8 @@ describe("api client", () => {
       .mockResolvedValueOnce(jsonResponse({ id: "approval-1" }))
       .mockResolvedValueOnce(jsonResponse({ status: "approved" }))
       .mockResolvedValueOnce(jsonResponse({ status: "rejected" }))
-      .mockResolvedValueOnce(jsonResponse({ host: "192.168.30.244", user: "root", port: 2222 }));
+      .mockResolvedValueOnce(jsonResponse({ host: "192.168.30.244", user: "root", port: 2222 }))
+      .mockResolvedValueOnce(jsonResponse({ status: "reachable", command: "true" }));
 
     const api = { fetch: fetchMock as unknown as typeof fetch };
 
@@ -38,6 +40,7 @@ describe("api client", () => {
     await approveCommand("approval-1", api);
     await rejectCommand("approval-2", api);
     await updateSshTarget({ host: "192.168.30.244", user: "root", port: 2222 }, api);
+    await checkSshTarget(api);
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/sessions",
@@ -46,7 +49,8 @@ describe("api client", () => {
       "/api/commands/prepare",
       "/api/approvals/approval-1/respond",
       "/api/approvals/approval-2/respond",
-      "/api/ssh/target"
+      "/api/ssh/target",
+      "/api/ssh/check"
     ]);
 
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
@@ -70,6 +74,7 @@ describe("api client", () => {
       user: "root",
       port: 2222
     });
+    expect(fetchMock.mock.calls[7][1].method).toBe("POST");
   });
 
   it("loads diagnostic presets from the server", async () => {

@@ -21,6 +21,24 @@ def quote_command(argv: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in argv)
 
 
+def redact_command(argv: list[str]) -> list[str]:
+    display: list[str] = []
+    redact_next = False
+    for item in argv:
+        if redact_next:
+            display.append("REDACTED")
+            redact_next = False
+            continue
+        display.append(item)
+        if item == "--access-token":
+            redact_next = True
+    return display
+
+
+def quote_display_command(argv: list[str]) -> str:
+    return quote_command(redact_command(argv))
+
+
 def server_command(args: argparse.Namespace) -> list[str]:
     command = [
         "cargo",
@@ -41,6 +59,8 @@ def server_command(args: argparse.Namespace) -> list[str]:
     ]
     if args.use_real_model:
         command.append("--use-real-model")
+    if args.access_token:
+        command.extend(["--access-token", args.access_token])
     return command
 
 
@@ -61,24 +81,38 @@ def print_commands(args: argparse.Namespace) -> None:
     print("Mobile Web SSH simulator development commands")
     print()
     print("# Rust server")
-    print(quote_command(server_command(args)))
+    print(quote_display_command(server_command(args)))
     if not args.no_web:
         print()
         print("# Web dev server")
         if MOBILE_WEB_DIR.exists():
             print(f"cd {shlex.quote(str(MOBILE_WEB_DIR.relative_to(REPO_ROOT)))}")
-            print(quote_command(web_command(args)))
+            print(quote_display_command(web_command(args)))
         else:
             print("# mobile-web is not present yet; create/install it before running:")
             print(f"# cd {shlex.quote(str(MOBILE_WEB_DIR.relative_to(REPO_ROOT)))}")
-            print(f"# {quote_command(web_command(args))}")
+            print(f"# {quote_display_command(web_command(args))}")
     print()
     print("# Smoke once the Rust server is listening")
-    print(f"python3 scripts/mobile_web_ssh_smoke.py --server http://127.0.0.1:{args.port}")
-    print(
-        "python3 scripts/mobile_web_ssh_flow_simulator.py "
-        f"--server http://127.0.0.1:{args.port} --auto-approve --json"
-    )
+    smoke = [
+        "python3",
+        "scripts/mobile_web_ssh_smoke.py",
+        "--server",
+        f"http://127.0.0.1:{args.port}",
+    ]
+    flow = [
+        "python3",
+        "scripts/mobile_web_ssh_flow_simulator.py",
+        "--server",
+        f"http://127.0.0.1:{args.port}",
+        "--auto-approve",
+        "--json",
+    ]
+    if args.access_token:
+        smoke.extend(["--access-token", args.access_token])
+        flow.extend(["--access-token", args.access_token])
+    print(quote_display_command(smoke))
+    print(quote_display_command(flow))
 
 
 def ensure_dependencies(args: argparse.Namespace) -> list[str]:
@@ -93,7 +127,7 @@ def ensure_dependencies(args: argparse.Namespace) -> list[str]:
 
 
 def start_process(argv: list[str], cwd: Path, name: str) -> subprocess.Popen[bytes]:
-    print(f"starting {name}: {quote_command(argv)}")
+    print(f"starting {name}: {quote_display_command(argv)}")
     return subprocess.Popen(argv, cwd=cwd)
 
 
@@ -152,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-host", default="192.168.30.244", help="SSH target host")
     parser.add_argument("--ssh-user", default="root", help="SSH target user")
     parser.add_argument("--ssh-port", type=int, default=22, help="SSH target port")
+    parser.add_argument("--access-token", help="optional mobile web access token for the Rust server")
     parser.add_argument("--web-host", default="0.0.0.0", help="Web dev server bind host")
     parser.add_argument("--web-port", type=int, default=5173, help="Web dev server bind port")
     parser.add_argument("--use-real-model", action="store_true", help="pass --use-real-model to the Rust server")

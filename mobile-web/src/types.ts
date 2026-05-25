@@ -40,6 +40,18 @@ export type SshTargetUpdateRequest = {
   port: number;
 };
 
+export type SshCheckResponse = {
+  status: "reachable" | "unreachable" | "timed_out" | "error";
+  target: SshTarget;
+  check_id: string;
+  command: string;
+  requires_approval: boolean;
+  exit_code?: number;
+  error_summary?: string;
+  duration_ms?: number;
+  timed_out: boolean;
+};
+
 export type DiagnosticKey =
   | "system_info"
   | "current_user"

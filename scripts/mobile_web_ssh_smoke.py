@@ -166,6 +166,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     event = connect_event(args.server, args.access_token)
     target = request_json(args.server, "GET", "/api/ssh/target", access_token=args.access_token).json()
+    ssh_check = request_json(
+        args.server,
+        "POST",
+        "/api/ssh/check",
+        access_token=args.access_token,
+        timeout=args.timeout,
+    ).json()
     session = request_json(
         args.server,
         "POST",
@@ -185,7 +192,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     audit_payload = request_json(args.server, "GET", "/api/audit/recent", access_token=args.access_token).json()
     entries = audit_entries(audit_payload)
 
-    assert_no_secret_text({"health": health, "target": target, "diagnostic": diagnostic, "audit": entries})
+    if ssh_check.get("status") not in {"reachable", "unreachable", "timed_out", "error"}:
+        raise ScriptError("POST /api/ssh/check returned an unknown status")
+
+    assert_no_secret_text(
+        {
+            "health": health,
+            "target": target,
+            "ssh_check": ssh_check,
+            "diagnostic": diagnostic,
+            "audit": entries,
+        }
+    )
     return {
         "status": "ok",
         "server": args.server,
@@ -193,6 +211,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "health": True,
             "event": event["connected"],
             "ssh_target": bool(target),
+            "ssh_check": True,
             "diagnostic": True,
             "audit_recent": True,
         },
@@ -200,6 +219,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "diagnostic": args.diagnostic,
         "audit_count": len(entries),
         "target": target,
+        "ssh_check": ssh_check,
         "updated_target": updated_target,
     }
 
@@ -211,6 +231,7 @@ def print_text(summary: dict[str, Any]) -> None:
     print(f"Diagnostic: {summary['diagnostic']}")
     target = summary["target"]
     print(f"SSH target: {target.get('user', '?')}@{target.get('host', '?')}:{target.get('port', '?')}")
+    print(f"SSH check: {summary['ssh_check'].get('status', '?')}")
     print(f"Audit entries: {summary['audit_count']}")
 
 

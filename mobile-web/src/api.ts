@@ -10,6 +10,7 @@ import type {
   Message,
   PendingApproval,
   SessionSummary,
+  SshCheckResponse,
   SshTarget,
   SshTargetUpdateRequest
 } from "./types";
@@ -110,6 +111,10 @@ export function updateSshTarget(input: SshTargetUpdateRequest, api?: ApiContext)
     { method: "PUT", body: JSON.stringify(input) },
     api
   );
+}
+
+export function checkSshTarget(api?: ApiContext): Promise<SshCheckResponse> {
+  return requestJson<SshCheckResponse>("/api/ssh/check", { method: "POST" }, api);
 }
 
 export function listSessions(api?: ApiContext): Promise<SessionSummary[]> {

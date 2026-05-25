@@ -113,6 +113,45 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.ssh-check-row {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.ssh-check-result {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.ssh-check-result strong {
+  color: #ffffff;
+  font-size: 0.82rem;
+  text-transform: capitalize;
+}
+
+.ssh-check-result span {
+  color: #dce7ef;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.ssh-check-result.reachable {
+  border-color: rgba(130, 216, 196, 0.72);
+}
+
+.ssh-check-result.unreachable,
+.ssh-check-result.timed_out,
+.ssh-check-result.error {
+  border-color: rgba(239, 181, 189, 0.82);
+}
+
 .access-token-form label {
   color: #dce7ef;
   min-width: 0;
@@ -353,6 +392,7 @@ strong {
   .status-grid,
   .diagnostic-grid,
   .access-token-form,
+  .ssh-check-row,
   .target-form {
     grid-template-columns: 1fr;
   }

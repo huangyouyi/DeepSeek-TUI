@@ -23,11 +23,20 @@ cargo run -p deepseek-mobile-web-server -- \
 For local-only testing, use `--host 127.0.0.1`.
 
 The default development mode has no API authorization. For LAN testing where a
-shared token is useful, start the server with `--access-token <token>` and pass
-the same value to the script helpers with `--access-token <token>`. The token is
-accepted through `Authorization: Bearer <token>` or `X-Mobile-Web-Token:
-<token>`. `/health` remains public. Evidence command logs redact the token
-argument.
+shared token is useful, the dev helper can pass it to the Rust server without
+printing the raw value:
+
+```bash
+python3 scripts/mobile_web_dev.py \
+  --print \
+  --access-token "$MOBILE_WEB_TOKEN"
+```
+
+Printed helper commands show `--access-token REDACTED`. Evidence command logs
+use `--access-token <redacted>`. Pass the real token value only through your
+shell command line or environment. The server accepts the token through
+`Authorization: Bearer <token>` or `X-Mobile-Web-Token: <token>`. `/health`
+remains public.
 
 The server prints the bind URL, LAN URL, SSH target, and model mode. It does not
 print DeepSeek API tokens, SSH secrets, approval nonces, command leases, bearer
@@ -110,6 +119,22 @@ python3 scripts/mobile_web_ssh_evidence.py \
   --write-plan-draft
 ```
 
+Final one-command Linux/Web/Rust/SSH control-chain verification, once the Rust
+server is already running and pointed at the disposable Linux SSH host:
+
+```bash
+python3 scripts/mobile_web_ssh_evidence.py \
+  --server http://127.0.0.1:8788 \
+  --host linux-web-ssh-control-chain \
+  --auto-approve \
+  --write-plan-draft
+```
+
+If the server was started with `--access-token`, add
+`--access-token "$MOBILE_WEB_TOKEN"` to the evidence command. The generated
+bundle includes the smoke run, full approval-flow simulator run, captured
+command logs, `results.md`, and `plan-update-draft.md`.
+
 The helper writes a dated folder under `validation/mobile-web-ssh/` by default,
 named like `YYYY-MM-DD-mobile-web-ssh-linux-lab-host/`. It creates `README.md`,
 `evidence-log.md`, `environment.md`, `commands.log`, `results.md`, and tracked
@@ -139,6 +164,14 @@ When `--write-plan-draft` is present, dry-run JSON includes the planned
 
 This evidence helper is Linux/LAN Web simulator evidence only. It is not iOS,
 macOS, Windows, or real mobile-platform evidence.
+
+## SSH Check
+
+`POST /api/ssh/check` runs the low-risk `true` command through the configured
+SSH target and returns a structured reachability result. It does not require an
+approval prompt. The Web UI exposes this as `Check SSH`, and
+`scripts/mobile_web_ssh_smoke.py` calls the route before running preset
+diagnostics.
 
 ## Evidence Boundary
 

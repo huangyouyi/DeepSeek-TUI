@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useReducer, useState } from "react";
 import {
   approveCommand,
   buildEventUrl,
+  checkSshTarget,
   createSession,
   getDiagnosticPresets,
   getHealth,
@@ -21,7 +22,7 @@ import {
   resolveDiagnosticPresets,
   withSseStatus
 } from "./state";
-import type { DiagnosticKey, DiagnosticPreset, ServerEvent } from "./types";
+import type { DiagnosticKey, DiagnosticPreset, ServerEvent, SshCheckResponse } from "./types";
 
 type LocalAction =
   | { type: "event"; event: ServerEvent }
@@ -56,6 +57,7 @@ export default function App() {
   const [accessTokenInput, setAccessTokenInput] = useState(() => getStoredAccessToken());
   const [accessToken, setAccessToken] = useState(() => getStoredAccessToken());
   const [diagnostics, setDiagnostics] = useState<DiagnosticPreset[]>(fallbackDiagnosticPresets);
+  const [sshCheck, setSshCheck] = useState<SshCheckResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -192,6 +194,9 @@ export default function App() {
     if (busy === "target") {
       return "Saving target";
     }
+    if (busy === "ssh-check") {
+      return "Checking SSH target";
+    }
     const diagnostic = diagnostics.find((item) => item.key === busy);
     if (diagnostic) {
       return `Running ${diagnostic.label}`;
@@ -217,10 +222,24 @@ export default function App() {
     try {
       const target = await updateSshTarget({ host, user, port });
       dispatch({ type: "target", target });
+      setSshCheck(null);
       dispatch({
         type: "event",
         event: { type: "connection.updated", payload: { status: `target ${target.user}@${target.host}:${target.port}` } }
       });
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleSshCheck() {
+    setBusy("ssh-check");
+    setError(null);
+    try {
+      const result = await checkSshTarget();
+      setSshCheck(result);
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -370,6 +389,22 @@ export default function App() {
             {busy === "target" ? "Saving" : "Save target"}
           </button>
         </form>
+        <div className="ssh-check-row">
+          <button className="secondary-button" disabled={busy !== null} onClick={handleSshCheck} type="button">
+            {busy === "ssh-check" ? "Checking" : "Check SSH"}
+          </button>
+          {sshCheck ? (
+            <div className={`ssh-check-result ${sshCheck.status}`} aria-live="polite">
+              <strong>{sshCheck.status}</strong>
+              <span>{formatSshCheckResult(sshCheck)}</span>
+            </div>
+          ) : (
+            <div className="ssh-check-result idle" aria-live="polite">
+              <strong>not checked</strong>
+              <span>Run a target reachability check.</span>
+            </div>
+          )}
+        </div>
       </header>
 
       {busyMessage ? (
@@ -535,4 +570,18 @@ function StatusPill({ label, value }: { label: string; value: string }) {
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected request failure";
+}
+
+function formatSshCheckResult(result: SshCheckResponse): string {
+  const parts = [`${result.target.user}@${result.target.host}:${result.target.port}`];
+  if (result.exit_code !== undefined) {
+    parts.push(`exit ${result.exit_code}`);
+  }
+  if (result.duration_ms !== undefined) {
+    parts.push(`${result.duration_ms} ms`);
+  }
+  if (result.error_summary) {
+    parts.push(result.error_summary);
+  }
+  return parts.join(" | ");
 }

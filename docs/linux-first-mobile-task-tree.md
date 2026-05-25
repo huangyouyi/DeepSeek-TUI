@@ -77,7 +77,7 @@ failure artifacts needed to review the platform behavior.
 | Timeout/cancel/status semantics | Linux tests cover timeout/cancel terminal events, runner request timeout/cancel/status metadata, status-like HTTP failures, and disconnected runner transport errors | Cross-transport cancellation, long-running runner status polling, network interruption recovery, process cleanup, and mobile UI state reconciliation | `lan-runner`, `macos-host`, `windows-host`, `ios-device` | LF-F8, LF-I completion gate follow-up, S8, S9, T8, T9 |
 | Mutating tool idempotency | Linux tests cover replay-safe binding for shell command leases, file write idempotency keys, package install dry-run idempotency, browser click approval metadata, and maintenance self-update/uninstall idempotency | Replay-safe protocol behavior across real network retries, duplicated mobile submissions, package/browser/maintenance side effects, and host restart recovery | `lan-runner`, `macos-host`, `windows-host`, `ios-device` | LF-F9, LF-I completion gate follow-up, S8, S9, T8, T9 |
 | Linux evidence bundle and plan draft | Simulator can write a dated Linux loopback evidence bundle into an explicit output root, and the parser consumes it into a reviewable plan draft | Manual maintainer acceptance before updating platform support claims; real platform claims still require their own evidence bundles | Linux loopback bundle under an explicit output root; downstream `macos-host`, `ios-simulator`, `ios-device`, `windows-host`, `lan-runner` bundles for real claims | LF-E5, LF-E6, LF-I6, S10, T10, U10, V10, W2 |
-| Linux mobile Web SSH simulator | LAN-accessible Rust HTTP/SSE server, phone-shaped Web UI scaffold, preset SSH diagnostics, approval-gated advanced commands, scriptable smoke/flow checks, and audit redaction against `root@192.168.30.244` | Real iOS WebView/Safari behavior, iOS local network permission prompt, generated Swift binding link, real runner pairing, production auth, and production OS sandboxing | Linux/LAN Web simulator command output; not a real-platform evidence bundle | Linux-only follow-up to LF-D/LF-F/LF-G; real claims still require `ios-device`, `ios-simulator`, `lan-runner`, `macos-host`, or `windows-host` bundles |
+| Linux mobile Web SSH simulator | LAN-accessible Rust HTTP/SSE server, phone-shaped Web UI scaffold, SSH target reachability check, preset SSH diagnostics, approval-gated advanced commands, scriptable smoke/flow checks, optional access-token redaction in helper/evidence output, and one-command evidence generation with `--write-plan-draft` | Real iOS WebView/Safari behavior, iOS local network permission prompt, generated Swift binding link, real runner pairing, production auth hardening, and production OS sandboxing | Linux/LAN Web simulator command output and generated plan draft; not a real-platform evidence bundle | Linux-only follow-up to LF-D/LF-F/LF-G; real claims still require `ios-device`, `ios-simulator`, `lan-runner`, `macos-host`, or `windows-host` bundles |
 
 ## Reserved Status Notes
 
@@ -87,6 +87,11 @@ failure artifacts needed to review the platform behavior.
   and `scripts/mobile_web_*` extends Linux/LAN development coverage. It proves
   the phone-shaped Web API, SSH diagnostic, approval, audit, and redaction flow
   on Linux only; it does not close any real iOS/macOS/Windows evidence item.
+  Its final repeatable verification path is
+  `scripts/mobile_web_ssh_evidence.py --auto-approve --write-plan-draft`
+  against an already-running Rust server. The smoke path includes
+  `POST /api/ssh/check` for target reachability before diagnostic and approval
+  execution.
 - LF-G6 is covered by `scripts/mobile_secret_scan.py` and its smoke test, which
   are included in Linux validation without scanning the whole repository.
 - LF-F8 is covered by Linux tests for timeout/cancel terminal events, runner

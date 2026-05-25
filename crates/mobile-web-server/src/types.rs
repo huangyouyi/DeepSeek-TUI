@@ -45,6 +45,22 @@ pub struct SshTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshCheckResponse {
+    pub status: String,
+    pub target: SshTarget,
+    pub check_id: String,
+    pub command: String,
+    pub requires_approval: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    pub timed_out: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticRequest {
     pub session_id: String,
     pub diagnostic: String,

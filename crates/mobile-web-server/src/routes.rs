@@ -12,6 +12,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use deepseek_mobile_agent_core::{risk::RiskAssessment, ssh::SshCommandRequest};
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::services::ServeDir;
@@ -24,6 +25,7 @@ use crate::{
     diagnostics::{DiagnosticError, DiagnosticService, preset_diagnostics},
     events::{broadcast_event, event_stream},
     ssh_exec::{CommandRunner, SystemSshCommandRunner},
+    types::SshCheckResponse,
 };
 
 pub const SERVICE_NAME: &str = "deepseek-mobile-web-server";
@@ -159,6 +161,7 @@ fn app_router_inner(
     let protected_routes = Router::new()
         .route("/event", get(events))
         .route("/api/ssh/target", get(get_ssh_target).put(put_ssh_target))
+        .route("/api/ssh/check", post(check_ssh_target))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}/messages", get(list_messages))
         .route("/api/sessions/{id}/prompt", post(prompt_session))
@@ -292,6 +295,54 @@ async fn put_ssh_target(
         }),
     );
     Json(state.app.ssh_target())
+}
+
+async fn check_ssh_target(State(state): State<RouterState>) -> Json<SshCheckResponse> {
+    let target = state.app.ssh_target();
+    let command = "true".to_string();
+    let check_id = format!("ssh-check-{}", Uuid::new_v4());
+    let request = SshCommandRequest {
+        command: command.clone(),
+        cwd: None,
+        timeout_ms: Some(5_000),
+        risk: RiskAssessment::low("ssh target reachability check"),
+    };
+
+    let response = match state.runner.run(&target, &request) {
+        Ok(output) => {
+            let reachable = output.exit_code == Some(0) && !output.timed_out;
+            SshCheckResponse {
+                status: if reachable {
+                    "reachable".to_string()
+                } else if output.timed_out {
+                    "timed_out".to_string()
+                } else {
+                    "unreachable".to_string()
+                },
+                target,
+                check_id,
+                command,
+                requires_approval: false,
+                exit_code: output.exit_code,
+                error_summary: check_error_summary(&output.stderr),
+                duration_ms: Some(duration_ms(output.duration)),
+                timed_out: output.timed_out,
+            }
+        }
+        Err(source) => SshCheckResponse {
+            status: "error".to_string(),
+            target,
+            check_id,
+            command,
+            requires_approval: false,
+            exit_code: None,
+            error_summary: Some(redact_text(&source.to_string())),
+            duration_ms: None,
+            timed_out: false,
+        },
+    };
+
+    Json(response)
 }
 
 async fn list_sessions(State(state): State<RouterState>) -> Json<Vec<SessionSummary>> {
@@ -479,4 +530,48 @@ pub fn now_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn duration_ms(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn check_error_summary(stderr: &str) -> Option<String> {
+    let summary = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(redact_text)?;
+
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary)
+    }
+}
+
+fn redact_text(text: &str) -> String {
+    let mut redacted = text.lines().map(redact_line).collect::<Vec<_>>().join("\n");
+    if text.ends_with('\n') {
+        redacted.push('\n');
+    }
+    redacted
+}
+
+fn redact_line(line: &str) -> String {
+    for separator in ['=', ':'] {
+        if let Some((key, _value)) = line.split_once(separator)
+            && is_secret_key(key.trim())
+        {
+            return format!("{}{}[REDACTED]", key, separator);
+        }
+    }
+    line.to_string()
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    ["token", "nonce", "secret", "bearer", "lease", "idempotency"]
+        .iter()
+        .any(|needle| key.contains(needle))
 }

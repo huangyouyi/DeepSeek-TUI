@@ -18,6 +18,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FLOW_SCRIPT = REPO_ROOT / "scripts" / "mobile_web_ssh_flow_simulator.py"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "mobile_web_ssh_smoke.py"
+DEV_SCRIPT = REPO_ROOT / "scripts" / "mobile_web_dev.py"
 
 
 class FakeState:
@@ -136,6 +137,20 @@ class FakeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         body = self._read_json()
+        if self.path == "/api/ssh/check":
+            self._send_json(
+                {
+                    "status": "reachable",
+                    "target": self.state.target,
+                    "check_id": "ssh-check-fake",
+                    "command": "true",
+                    "requires_approval": False,
+                    "exit_code": 0,
+                    "duration_ms": 1,
+                    "timed_out": False,
+                }
+            )
+            return
         if self.path == "/api/sessions":
             self._send_json(self.state.next_session(), status=201)
             return
@@ -280,10 +295,28 @@ def test_smoke_script_checks_core_endpoints() -> None:
     with_fake_server(run)
 
 
+def test_dev_helper_prints_redacted_access_token() -> None:
+    completed = run_script(
+        DEV_SCRIPT,
+        "--print",
+        "--access-token",
+        "dev-secret-token",
+        "--no-web",
+    )
+    combined = completed.stdout + completed.stderr
+    if "dev-secret-token" in combined:
+        raise AssertionError(f"dev helper leaked access token:\n{combined}")
+    if "--access-token REDACTED" not in combined:
+        raise AssertionError(f"dev helper did not print redacted token placeholder:\n{combined}")
+    if "scripts/mobile_web_ssh_smoke.py --server http://127.0.0.1:8788 --access-token REDACTED" not in combined:
+        raise AssertionError(f"smoke helper command did not redact access token:\n{combined}")
+
+
 def main() -> int:
     tests = [
         test_flow_simulator_uses_fake_server_and_auto_approval,
         test_smoke_script_checks_core_endpoints,
+        test_dev_helper_prints_redacted_access_token,
     ]
     for test in tests:
         test()
