@@ -143,4 +143,23 @@ describe("App agent chat", () => {
       pending_approvals: []
     }));
   });
+
+  it("copies a compact feedback report for manual review", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    bootstrapFetch();
+
+    render(<App />);
+
+    await screen.findByText("Timeline");
+    fireEvent.click(screen.getByRole("button", { name: "Copy report" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0][0]).toContain("DeepSeek Mobile SSH report");
+    expect(writeText.mock.calls[0][0]).toContain("Target: root@192.168.30.244:22");
+    await screen.findByText("Report copied");
+  });
 });

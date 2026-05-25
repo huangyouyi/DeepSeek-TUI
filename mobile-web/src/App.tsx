@@ -17,6 +17,7 @@ import {
   updateSshTarget
 } from "./api";
 import {
+  buildFeedbackReport,
   fallbackDiagnosticPresets,
   initialAppState,
   reduceEvent,
@@ -62,6 +63,7 @@ export default function App() {
   const [sshCheck, setSshCheck] = useState<SshCheckResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -210,6 +212,8 @@ export default function App() {
     return approval ? "Sending approval response" : "Working";
   }, [busy, diagnostics, state.pendingApprovals]);
 
+  const feedbackReport = useMemo(() => buildFeedbackReport(state, sshCheck), [state, sshCheck]);
+
   async function handleTargetSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -350,6 +354,17 @@ export default function App() {
       setError(messageFromError(err));
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function handleCopyReport() {
+    try {
+      await navigator.clipboard.writeText(feedbackReport);
+      setCopyStatus("Report copied");
+      setError(null);
+    } catch {
+      setCopyStatus("Copy failed");
+      setError("Clipboard copy failed. Select the report text and copy it manually.");
     }
   }
 
@@ -578,8 +593,22 @@ export default function App() {
       <section className="panel timeline-panel" aria-labelledby="timeline-heading">
         <div className="section-heading">
           <h2 id="timeline-heading">Timeline</h2>
-          <span>{state.timeline.length}</span>
+          <div className="section-actions">
+            <span>{state.timeline.length}</span>
+            <button className="secondary-button compact-button" onClick={handleCopyReport} type="button">
+              Copy report
+            </button>
+          </div>
         </div>
+        {copyStatus ? (
+          <p className={`copy-status ${copyStatus === "Copy failed" ? "copy-status-error" : ""}`} aria-live="polite">
+            {copyStatus}
+          </p>
+        ) : null}
+        <label className="report-copy-field">
+          Copyable report
+          <textarea readOnly rows={8} value={feedbackReport} />
+        </label>
         <div className="timeline-list">
           {state.timeline.length === 0 ? (
             <p className="empty-state">Waiting for server events.</p>

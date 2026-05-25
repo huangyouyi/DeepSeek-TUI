@@ -194,8 +194,43 @@ h2 {
 summary {
   align-items: center;
   display: flex;
+  gap: 10px;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.section-actions {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.compact-button {
+  min-height: 36px;
+  padding: 7px 10px;
+}
+
+.copy-status {
+  color: #285f65;
+  font-size: 0.82rem;
+  font-weight: 700;
+  margin: -4px 0 10px;
+}
+
+.copy-status-error {
+  color: #8c2633;
+}
+
+.report-copy-field {
+  margin-bottom: 12px;
+}
+
+.report-copy-field textarea {
+  background: #f8fafc;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  min-height: 168px;
 }
 
 summary {

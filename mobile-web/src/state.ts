@@ -5,6 +5,7 @@ import type {
   PendingApproval,
   ServerEvent,
   SessionSummary,
+  SshCheckResponse,
   SshTarget
 } from "./types";
 
@@ -201,14 +202,57 @@ function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
 }
 
 function prependTimeline(items: TimelineEntry[], input: Omit<TimelineEntry, "id" | "createdAtMs">): TimelineEntry[] {
+  const deduped = items.filter((item, index) => {
+    if (index >= 8) {
+      return true;
+    }
+    return !(item.kind === input.kind && item.title === input.title && item.text === input.text);
+  });
   return [
     {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       createdAtMs: Date.now(),
       ...input
     },
-    ...items
+    ...deduped
   ].slice(0, 80);
+}
+
+export function buildFeedbackReport(state: AppState, sshCheck?: SshCheckResponse | null): string {
+  const target = state.connection.target
+    ? `${state.connection.target.user}@${state.connection.target.host}:${state.connection.target.port}`
+    : "unknown";
+  const lines = [
+    "DeepSeek Mobile SSH report",
+    "",
+    `Server: ${state.connection.server}`,
+    `SSE: ${state.connection.sse}`,
+    `Target: ${target}`,
+    `Pending approvals: ${state.pendingApprovals.length}`
+  ];
+
+  if (sshCheck) {
+    lines.push(`SSH check: ${sshCheck.status}`);
+  }
+
+  if (state.pendingApprovals.length > 0) {
+    lines.push("", "Pending approval commands:");
+    state.pendingApprovals.forEach((approval, index) => {
+      lines.push(`${index + 1}. ${approval.command}`);
+    });
+  }
+
+  lines.push("", "Recent timeline:");
+  if (state.timeline.length === 0) {
+    lines.push("(empty)");
+  } else {
+    state.timeline.slice(0, 30).forEach((entry) => {
+      lines.push("", `[${entry.title}] ${new Date(entry.createdAtMs).toLocaleString()}`);
+      lines.push(entry.text);
+    });
+  }
+
+  return lines.join("\n");
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> {
