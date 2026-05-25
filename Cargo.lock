@@ -1357,6 +1357,7 @@ dependencies = [
  "dirs",
  "futures-core",
  "pretty_assertions",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

@@ -1,3 +1,4 @@
+pub mod agent_model;
 pub mod approvals;
 pub mod diagnostics;
 pub mod events;
