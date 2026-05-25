@@ -7,6 +7,7 @@ use thiserror::Error;
 use crate::model_config::MobileModelConfig;
 
 const SHELL_TOOL_NAME: &str = "remote.shell.exec";
+const SHELL_TOOL_WIRE_NAME: &str = "remote_shell_exec";
 const REDACTED: &str = "<redacted>";
 
 pub trait AgentModel: Send + Sync {
@@ -230,7 +231,7 @@ impl DeepSeekAgentModel {
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a remote Linux agent. Use remote.shell.exec for shell commands and otherwise answer concisely."
+                        "content": "You are a remote Linux agent. Use the remote_shell_exec tool for shell commands and otherwise answer concisely."
                     },
                     {
                         "role": "user",
@@ -241,7 +242,7 @@ impl DeepSeekAgentModel {
                     {
                         "type": "function",
                         "function": {
-                            "name": SHELL_TOOL_NAME,
+                            "name": SHELL_TOOL_WIRE_NAME,
                             "description": "Execute a shell command on the remote Linux host.",
                             "parameters": {
                                 "type": "object",
@@ -386,7 +387,8 @@ fn parse_chat_completion_response(body: &str) -> Result<AgentModelResponse, Agen
 }
 
 fn agent_tool_call_from_openai(tool_call: OpenAiToolCall) -> Option<AgentToolCall> {
-    if tool_call.function.name != SHELL_TOOL_NAME {
+    if tool_call.function.name != SHELL_TOOL_WIRE_NAME && tool_call.function.name != SHELL_TOOL_NAME
+    {
         return None;
     }
     let arguments =

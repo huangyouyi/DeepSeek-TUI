@@ -123,7 +123,7 @@ fn deepseek_agent_model_sends_openai_compatible_tool_request_and_parses_tool_cal
                 "id": "call-1",
                 "type": "function",
                 "function": {
-                  "name": "remote.shell.exec",
+                  "name": "remote_shell_exec",
                   "arguments": "{\"command\":\"df -h\"}"
                 }
               }]
@@ -164,7 +164,14 @@ fn deepseek_agent_model_sends_openai_compatible_tool_request_and_parses_tool_cal
     assert_eq!(request.body["messages"][1]["content"], "disk status");
     assert_eq!(
         request.body["tools"][0]["function"]["name"],
-        "remote.shell.exec"
+        "remote_shell_exec"
+    );
+    assert!(
+        request.body["tools"][0]["function"]["name"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     );
 }
 
