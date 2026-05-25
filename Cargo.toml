@@ -10,6 +10,7 @@ members = [
     "crates/kai-runner",
     "crates/mcp",
     "crates/mobile-agent-core",
+    "crates/mobile-web-server",
     "crates/protocol",
     "crates/secrets",
     "crates/state",

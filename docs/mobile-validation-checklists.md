@@ -112,6 +112,83 @@ and UniFFI plan consistency; they do not prove SwiftUI, Keychain, SQLite
 sandbox behavior, Xcode package resolution, simulator launch, signing, local
 network permission, or physical-device behavior.
 
+## Linux Mobile Web SSH Simulator
+
+Goal: validate the LAN-accessible phone-shaped Web/API/SSH control loop on
+Linux before real iOS or real runner evidence. This is simulator evidence only.
+
+Run the Rust server from the repository root:
+
+```bash
+cargo run -p deepseek-mobile-web-server -- \
+  --host 0.0.0.0 \
+  --port 8788 \
+  --ssh-host 192.168.30.244 \
+  --ssh-user root \
+  --ssh-port 22
+```
+
+Run the script checks against the started server:
+
+```bash
+python3 scripts/mobile_web_ssh_smoke.py --server http://127.0.0.1:8788 --json
+python3 scripts/mobile_web_ssh_flow_simulator.py --server http://127.0.0.1:8788 --auto-approve --json
+python3 scripts/mobile_web_ai_chat_smoke.py --server http://127.0.0.1:8788 --message "请问当前运行在什么系统？" --model-mode auto --json
+```
+
+If the Rust server was started with `--access-token <token>`, pass the same
+token to the script checks with `--access-token <token>`. The evidence helper
+redacts that argument in `commands.log`; the AI chat helper sends it only as an
+HTTP header and does not print it.
+
+Before a live model run, validate the AI chat script against its fake-server
+coverage:
+
+```bash
+python3 scripts/mobile_web_ai_chat_smoke_test.py
+```
+
+For live AI chat evidence, the OS question should complete with a non-empty
+assistant answer and no `not found` text. Use `--model-config <path>` only for
+an isolated test config; do not read or modify the real
+`~/.deepseek/config.toml` during validation. Add `--auto-approve` only when the
+run is intentionally validating the first pending high-risk approval path.
+When `--auto-approve` is used, the approval response and Web timeline should
+include a final assistant result such as
+`本轮远程命令已全部执行完成。结果如下：...`, not only raw stdout/stderr or an
+approval-complete placeholder.
+
+For the final repeatable Linux/Web/Rust/SSH control-chain verification, start
+the Rust server first, then run one evidence command:
+
+```bash
+python3 scripts/mobile_web_ssh_evidence.py \
+  --server http://127.0.0.1:8788 \
+  --host linux-web-ssh-control-chain \
+  --auto-approve \
+  --write-plan-draft
+```
+
+If authorization is enabled, append `--access-token "$MOBILE_WEB_TOKEN"`. This
+creates the dated Linux/LAN Web simulator evidence bundle and writes
+`plan-update-draft.md` from the captured results.
+
+Expected result:
+
+- `/health`, `/event`, `/api/ssh/target`, `/api/sessions`, and
+  `/api/audit/recent` respond.
+- `/api/ssh/check` reports target reachability without an approval prompt.
+- A preset diagnostic executes over SSH.
+- An advanced command can be rejected without execution.
+- A second advanced command can be approved once and executed.
+- AI chat can request a high-risk remote Linux command, show pending approval,
+  execute after approval, and display a final assistant response.
+- Audit output does not expose known token-like sentinel fields.
+
+This does not prove SwiftUI, Xcode, iOS simulator/device, Keychain, iOS local
+network permission, macOS, Windows, real LAN runner pairing, package install,
+browser automation, or production sandbox behavior.
+
 ## macOS Host Checklist
 
 Goal: prove the Swift package, Xcode path, simulator build path, and macOS

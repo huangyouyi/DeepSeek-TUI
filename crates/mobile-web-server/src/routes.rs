@@ -1,0 +1,907 @@
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode, Uri, header},
+    middleware,
+    response::IntoResponse,
+    routing::{get, post},
+};
+use deepseek_mobile_agent_core::{
+    remote_schema::{RemoteToolCall, RemoteToolName},
+    risk::RiskAssessment,
+    ssh::SshCommandRequest,
+};
+use serde::Deserialize;
+use serde_json::json;
+use tower_http::services::ServeDir;
+use uuid::Uuid;
+
+use crate::{
+    AppState, AuditEntry, CommandPrepareRequest, DiagnosticRequest, HealthResponse, Message,
+    MessagePart, SessionSummary, SshTarget,
+    agent_model::{AgentModel, AgentModelRequest, AgentToolCall, MockAgentModel},
+    agent_tool_policy::{AgentToolDecision, AgentToolPolicy},
+    approvals::{ApprovalError, ApprovalService},
+    diagnostics::{DiagnosticError, DiagnosticService, preset_diagnostics},
+    events::{broadcast_event, event_stream},
+    ssh_exec::{CommandRunner, SshCommandOutput, SystemSshCommandRunner},
+    types::{AgentExecutedTool, AgentTurnRequest, AgentTurnResponse, SshCheckResponse},
+};
+
+pub const SERVICE_NAME: &str = "deepseek-mobile-web-server";
+const PROTOCOL: &str = "mobile-web-v1";
+
+#[derive(Clone, Debug)]
+pub struct MobileWebServerConfig {
+    pub use_real_model: bool,
+    pub static_dir: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+struct AccessToken {
+    value: Arc<str>,
+}
+
+impl std::fmt::Debug for AccessToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AccessToken")
+            .field("token_present", &true)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl AccessToken {
+    fn new(value: String) -> Self {
+        Self {
+            value: Arc::from(value),
+        }
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        self.value.as_ref() == candidate
+    }
+}
+
+#[derive(Clone)]
+struct RouterState {
+    app: AppState,
+    runner: Arc<dyn CommandRunner>,
+    model: Arc<dyn AgentModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSessionRequest {
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSshTargetRequest {
+    host: Option<String>,
+    user: Option<String>,
+    port: Option<u16>,
+    key_present: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventAccessTokenQuery {
+    access_token: Option<String>,
+}
+
+pub fn app_router(state: AppState, use_real_model: bool) -> Router {
+    app_router_with_config(
+        state,
+        MobileWebServerConfig {
+            use_real_model,
+            static_dir: None,
+        },
+    )
+}
+
+pub fn app_router_with_config(state: AppState, config: MobileWebServerConfig) -> Router {
+    app_router_inner(
+        state,
+        config,
+        Arc::new(SystemSshCommandRunner),
+        Arc::new(MockAgentModel::new()),
+        None,
+    )
+}
+
+pub fn app_router_with_access_token(
+    state: AppState,
+    use_real_model: bool,
+    access_token: String,
+) -> Router {
+    app_router_with_config_and_access_token(
+        state,
+        MobileWebServerConfig {
+            use_real_model,
+            static_dir: None,
+        },
+        access_token,
+    )
+}
+
+pub fn app_router_with_config_and_access_token(
+    state: AppState,
+    config: MobileWebServerConfig,
+    access_token: String,
+) -> Router {
+    app_router_inner(
+        state,
+        config,
+        Arc::new(SystemSshCommandRunner),
+        Arc::new(MockAgentModel::new()),
+        Some(AccessToken::new(access_token)),
+    )
+}
+
+pub fn app_router_with_config_and_model(
+    state: AppState,
+    config: MobileWebServerConfig,
+    model: Arc<dyn AgentModel>,
+) -> Router {
+    app_router_inner(state, config, Arc::new(SystemSshCommandRunner), model, None)
+}
+
+pub fn app_router_with_config_access_token_and_model(
+    state: AppState,
+    config: MobileWebServerConfig,
+    access_token: String,
+    model: Arc<dyn AgentModel>,
+) -> Router {
+    app_router_inner(
+        state,
+        config,
+        Arc::new(SystemSshCommandRunner),
+        model,
+        Some(AccessToken::new(access_token)),
+    )
+}
+
+pub fn app_router_with_runner<R>(state: AppState, use_real_model: bool, runner: R) -> Router
+where
+    R: CommandRunner,
+{
+    app_router_inner(
+        state,
+        MobileWebServerConfig {
+            use_real_model,
+            static_dir: None,
+        },
+        Arc::new(runner),
+        Arc::new(MockAgentModel::new()),
+        None,
+    )
+}
+
+fn app_router_inner(
+    state: AppState,
+    config: MobileWebServerConfig,
+    runner: Arc<dyn CommandRunner>,
+    model: Arc<dyn AgentModel>,
+    access_token: Option<AccessToken>,
+) -> Router {
+    let router_state = RouterState {
+        app: state,
+        runner,
+        model,
+    };
+
+    let protected_routes = Router::new()
+        .route("/event", get(events))
+        .route("/api/ssh/target", get(get_ssh_target).put(put_ssh_target))
+        .route("/api/ssh/check", post(check_ssh_target))
+        .route("/api/sessions", get(list_sessions).post(create_session))
+        .route("/api/sessions/{id}/messages", get(list_messages))
+        .route("/api/sessions/{id}/prompt", post(prompt_session))
+        .route("/api/sessions/{id}/agent-turn", post(agent_turn))
+        .route("/api/diagnostics/presets", get(list_diagnostic_presets))
+        .route("/api/diagnostics/run", post(run_diagnostic))
+        .route("/api/commands/prepare", post(prepare_command))
+        .route("/api/approvals/{id}/respond", post(respond_approval))
+        .route("/api/audit/recent", get(list_audit));
+
+    let protected_routes = if let Some(access_token) = access_token {
+        protected_routes.route_layer(middleware::from_fn(
+            move |headers: HeaderMap, request, next| {
+                require_access_token(headers, request, next, access_token.clone())
+            },
+        ))
+    } else {
+        protected_routes
+    };
+
+    let router = Router::new()
+        .route("/health", get(health))
+        .merge(protected_routes);
+
+    let router = if let Some(static_dir) = config.static_dir {
+        router.fallback_service(ServeDir::new(static_dir))
+    } else {
+        router
+    };
+
+    router.with_state(router_state)
+}
+
+async fn require_access_token(
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: middleware::Next,
+    access_token: AccessToken,
+) -> impl IntoResponse {
+    if request_access_token_matches(&headers, request.uri(), &access_token) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "code": "unauthorized",
+                "message": "missing or invalid mobile web access token"
+            })),
+        )
+            .into_response()
+    }
+}
+
+fn request_access_token_matches(
+    headers: &HeaderMap,
+    uri: &Uri,
+    access_token: &AccessToken,
+) -> bool {
+    bearer_token(headers).is_some_and(|candidate| access_token.matches(candidate))
+        || mobile_web_token(headers).is_some_and(|candidate| access_token.matches(candidate))
+        || event_query_token(uri).is_some_and(|candidate| access_token.matches(&candidate))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+fn mobile_web_token(headers: &HeaderMap) -> Option<&str> {
+    headers.get("X-Mobile-Web-Token")?.to_str().ok()
+}
+
+fn event_query_token(uri: &Uri) -> Option<String> {
+    if uri.path() != "/event" {
+        return None;
+    }
+
+    Query::<EventAccessTokenQuery>::try_from_uri(uri)
+        .ok()?
+        .0
+        .access_token
+}
+
+async fn health(State(state): State<RouterState>) -> Json<HealthResponse> {
+    let model = state.model.redacted_status();
+    Json(HealthResponse {
+        status: "ok".to_string(),
+        service: SERVICE_NAME.to_string(),
+        protocol: PROTOCOL.to_string(),
+        model: model.model_mode,
+    })
+}
+
+async fn events(State(state): State<RouterState>) -> impl IntoResponse {
+    event_stream(state.app)
+}
+
+async fn get_ssh_target(State(state): State<RouterState>) -> Json<SshTarget> {
+    Json(state.app.ssh_target())
+}
+
+async fn put_ssh_target(
+    State(state): State<RouterState>,
+    Json(request): Json<UpdateSshTargetRequest>,
+) -> Json<SshTarget> {
+    let current = state.app.ssh_target();
+    let target = SshTarget {
+        host: request.host.unwrap_or(current.host),
+        user: request.user.unwrap_or(current.user),
+        port: request.port.unwrap_or(current.port),
+        key_present: request.key_present.unwrap_or(current.key_present),
+    };
+    state.app.set_ssh_target(target.clone());
+    broadcast_event(
+        &state.app,
+        "connection.updated",
+        json!({
+            "ssh_target": {
+                "host": target.host,
+                "user": target.user,
+                "port": target.port,
+                "key_present": target.key_present
+            },
+            "updated_at_ms": now_ms()
+        }),
+    );
+    Json(state.app.ssh_target())
+}
+
+async fn check_ssh_target(State(state): State<RouterState>) -> Json<SshCheckResponse> {
+    let target = state.app.ssh_target();
+    let command = "true".to_string();
+    let check_id = format!("ssh-check-{}", Uuid::new_v4());
+    let request = SshCommandRequest {
+        command: command.clone(),
+        cwd: None,
+        timeout_ms: Some(5_000),
+        risk: RiskAssessment::low("ssh target reachability check"),
+    };
+
+    let response = match state.runner.run(&target, &request) {
+        Ok(output) => {
+            let reachable = output.exit_code == Some(0) && !output.timed_out;
+            SshCheckResponse {
+                status: if reachable {
+                    "reachable".to_string()
+                } else if output.timed_out {
+                    "timed_out".to_string()
+                } else {
+                    "unreachable".to_string()
+                },
+                target,
+                check_id,
+                command,
+                requires_approval: false,
+                exit_code: output.exit_code,
+                error_summary: check_error_summary(&output.stderr),
+                duration_ms: Some(duration_ms(output.duration)),
+                timed_out: output.timed_out,
+            }
+        }
+        Err(source) => SshCheckResponse {
+            status: "error".to_string(),
+            target,
+            check_id,
+            command,
+            requires_approval: false,
+            exit_code: None,
+            error_summary: Some(redact_text(&source.to_string())),
+            duration_ms: None,
+            timed_out: false,
+        },
+    };
+
+    Json(response)
+}
+
+async fn list_sessions(State(state): State<RouterState>) -> Json<Vec<SessionSummary>> {
+    Json(state.app.sessions())
+}
+
+async fn create_session(
+    State(state): State<RouterState>,
+    request: Option<Json<CreateSessionRequest>>,
+) -> (StatusCode, Json<SessionSummary>) {
+    let now = now_ms();
+    let session = SessionSummary {
+        id: Uuid::new_v4().to_string(),
+        title: request
+            .and_then(|Json(request)| request.title)
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Mobile SSH session".to_string()),
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    state.app.upsert_session(session.clone());
+    state.app.push_audit(AuditEntry {
+        id: Uuid::new_v4().to_string(),
+        session_id: Some(session.id.clone()),
+        kind: "session.created".to_string(),
+        created_at_ms: now,
+        summary: "created session".to_string(),
+        metadata: json!({}),
+    });
+    broadcast_event(
+        &state.app,
+        "session.updated",
+        serde_json::to_value(&session).expect("session summary must serialize"),
+    );
+
+    (StatusCode::CREATED, Json(session))
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptRequest {
+    input: Option<String>,
+    content: Option<String>,
+}
+
+async fn prompt_session(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<PromptRequest>,
+) -> (StatusCode, Json<Message>) {
+    let now = now_ms();
+    let text = request
+        .input
+        .or(request.content)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let message = Message {
+        id: Uuid::new_v4().to_string(),
+        session_id,
+        role: "user".to_string(),
+        created_at_ms: now,
+        parts: vec![MessagePart {
+            id: Uuid::new_v4().to_string(),
+            kind: "text".to_string(),
+            text: Some(text),
+            data: json!({}),
+        }],
+    };
+    state.app.push_message(message.clone());
+    broadcast_event(
+        &state.app,
+        "message.updated",
+        serde_json::to_value(&message).expect("message must serialize"),
+    );
+    (StatusCode::CREATED, Json(message))
+}
+
+async fn agent_turn(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<AgentTurnRequest>,
+) -> impl IntoResponse {
+    let turn_id = format!("turn-{}", Uuid::new_v4());
+    let user_text = request.message.trim().to_string();
+    let user_message = session_message(&session_id, "user", &user_text, json!({}));
+    state.app.push_message(user_message.clone());
+    broadcast_event(
+        &state.app,
+        "message.updated",
+        serde_json::to_value(&user_message).expect("message must serialize"),
+    );
+    broadcast_event(
+        &state.app,
+        "assistant.started",
+        json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+        }),
+    );
+
+    let model_response = match state.model.complete(&AgentModelRequest {
+        session_id: session_id.clone(),
+        message: user_text.clone(),
+    }) {
+        Ok(response) => response,
+        Err(error) => {
+            let assistant_text = format!("Agent model failed: {error}");
+            let assistant = session_message(
+                &session_id,
+                "assistant",
+                &assistant_text,
+                json!({ "turn_id": turn_id }),
+            );
+            state.app.push_message(assistant.clone());
+            broadcast_event(
+                &state.app,
+                "message.updated",
+                serde_json::to_value(&assistant).expect("message must serialize"),
+            );
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(AgentTurnResponse {
+                    session_id,
+                    turn_id,
+                    status: "model_error".to_string(),
+                    assistant_text,
+                    executed_tools: Vec::new(),
+                    pending_approvals: Vec::new(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let policy = AgentToolPolicy;
+    let approval_service = ApprovalService::new(state.runner.clone());
+    let mut assistant_text = model_response.assistant_text;
+    let mut executed_tools = Vec::new();
+    let mut pending_approvals = Vec::new();
+    let mut rejected_tools = Vec::new();
+
+    for tool_call in model_response.tool_calls {
+        let remote_call = match remote_tool_call(tool_call) {
+            Ok(call) => call,
+            Err(reason) => {
+                rejected_tools.push(reason);
+                continue;
+            }
+        };
+
+        match policy.classify(&remote_call) {
+            AgentToolDecision::RunLowRisk(command) => {
+                broadcast_event(
+                    &state.app,
+                    "agent.tool.proposed",
+                    json!({
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "tool": "remote.shell.exec",
+                        "command": command.command,
+                        "requires_approval": false,
+                    }),
+                );
+                match run_agent_shell_command(&state, &session_id, &turn_id, &command.command) {
+                    Ok(output) => {
+                        let status = if output.timed_out {
+                            "timed_out"
+                        } else {
+                            "completed"
+                        };
+                        assistant_text = summarize_shell_output(&command.command, &output);
+                        executed_tools.push(AgentExecutedTool {
+                            tool: "remote.shell.exec".to_string(),
+                            command: command.command,
+                            requires_approval: false,
+                            exit_code: output.exit_code,
+                            status: status.to_string(),
+                        });
+                    }
+                    Err(error) => {
+                        assistant_text = format!("SSH command failed: {error}");
+                        executed_tools.push(AgentExecutedTool {
+                            tool: "remote.shell.exec".to_string(),
+                            command: command.command,
+                            requires_approval: false,
+                            exit_code: None,
+                            status: "failed".to_string(),
+                        });
+                    }
+                }
+            }
+            AgentToolDecision::RequireApproval(command) => {
+                let approval = approval_service.prepare(
+                    &state.app,
+                    CommandPrepareRequest {
+                        session_id: session_id.clone(),
+                        command: command.command,
+                        cwd: command.cwd,
+                    },
+                );
+                approval.set_agent_turn_id(turn_id.clone());
+                pending_approvals.push(approval);
+                assistant_text =
+                    "I need approval before running the requested command.".to_string();
+            }
+            AgentToolDecision::Reject { reason } => {
+                rejected_tools.push(reason);
+            }
+        }
+    }
+
+    if !rejected_tools.is_empty() {
+        assistant_text = format!(
+            "I could not run one or more model-proposed tools: {}",
+            rejected_tools.join("; ")
+        );
+    }
+
+    let status = if !pending_approvals.is_empty() {
+        "waiting_for_approval"
+    } else {
+        "completed"
+    }
+    .to_string();
+    let assistant = session_message(
+        &session_id,
+        "assistant",
+        &assistant_text,
+        json!({ "turn_id": turn_id }),
+    );
+    state.app.push_message(assistant.clone());
+    broadcast_event(
+        &state.app,
+        "message.updated",
+        serde_json::to_value(&assistant).expect("message must serialize"),
+    );
+    broadcast_event(
+        &state.app,
+        "assistant.completed",
+        json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "status": status,
+        }),
+    );
+
+    Json(AgentTurnResponse {
+        session_id,
+        turn_id,
+        status,
+        assistant_text,
+        executed_tools,
+        pending_approvals,
+    })
+    .into_response()
+}
+
+async fn list_messages(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+) -> Json<Vec<Message>> {
+    Json(state.app.messages(&session_id))
+}
+
+async fn list_audit(State(state): State<RouterState>) -> Json<Vec<AuditEntry>> {
+    Json(state.app.audit_recent())
+}
+
+async fn list_diagnostic_presets() -> Json<Vec<crate::DiagnosticPreset>> {
+    Json(preset_diagnostics())
+}
+
+async fn run_diagnostic(
+    State(state): State<RouterState>,
+    Json(request): Json<DiagnosticRequest>,
+) -> impl IntoResponse {
+    let service = DiagnosticService::new(state.runner.clone());
+    match service.run(&state.app, request) {
+        Ok(run) => {
+            broadcast_event(
+                &state.app,
+                "audit.updated",
+                serde_json::to_value(&run.audit).expect("audit must serialize"),
+            );
+            (StatusCode::OK, Json(run.response)).into_response()
+        }
+        Err(DiagnosticError::UnknownDiagnostic { diagnostic }) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": "unknown_diagnostic",
+                "message": format!("unknown diagnostic preset: {diagnostic}")
+            })),
+        )
+            .into_response(),
+        Err(DiagnosticError::Command { source, .. }) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "code": "ssh_failed",
+                "message": source.to_string()
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn prepare_command(
+    State(state): State<RouterState>,
+    Json(request): Json<CommandPrepareRequest>,
+) -> (StatusCode, Json<crate::PendingApproval>) {
+    let service = ApprovalService::new(state.runner.clone());
+    let approval = service.prepare(&state.app, request);
+    (StatusCode::CREATED, Json(approval))
+}
+
+async fn respond_approval(
+    State(state): State<RouterState>,
+    Path(approval_id): Path<String>,
+    Json(request): Json<crate::ApprovalRespondRequest>,
+) -> impl IntoResponse {
+    let service = ApprovalService::new(state.runner.clone());
+    match service.respond(&state.app, &approval_id, request) {
+        Ok(response) => {
+            if let Some(entry) = state.app.audit_recent().last().cloned() {
+                broadcast_event(
+                    &state.app,
+                    "audit.updated",
+                    serde_json::to_value(&entry).expect("audit must serialize"),
+                );
+            }
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(ApprovalError::NotFound { approval_id }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "approval_not_found",
+                "message": format!("approval not found or already consumed: {approval_id}")
+            })),
+        )
+            .into_response(),
+        Err(ApprovalError::UnsupportedResponse { response }) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": "unsupported_approval_response",
+                "message": format!("unsupported approval response: {response}")
+            })),
+        )
+            .into_response(),
+        Err(ApprovalError::Command(source)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "code": "ssh_failed",
+                "message": source.to_string()
+            })),
+        )
+            .into_response(),
+    }
+}
+
+#[must_use]
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must be after unix epoch")
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn duration_ms(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn check_error_summary(stderr: &str) -> Option<String> {
+    let summary = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(redact_text)?;
+
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary)
+    }
+}
+
+fn session_message(session_id: &str, role: &str, text: &str, data: serde_json::Value) -> Message {
+    Message {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        role: role.to_string(),
+        created_at_ms: now_ms(),
+        parts: vec![MessagePart {
+            id: Uuid::new_v4().to_string(),
+            kind: "text".to_string(),
+            text: Some(text.to_string()),
+            data,
+        }],
+    }
+}
+
+fn remote_tool_call(tool_call: AgentToolCall) -> Result<RemoteToolCall, String> {
+    let name = RemoteToolName::parse(&tool_call.tool)
+        .map_err(|_| format!("unsupported agent tool: {}", tool_call.tool))?;
+    Ok(RemoteToolCall {
+        call_id: format!("agent-call-{}", Uuid::new_v4()),
+        name,
+        arguments: json!({ "command": tool_call.command }),
+    })
+}
+
+fn run_agent_shell_command(
+    state: &RouterState,
+    session_id: &str,
+    turn_id: &str,
+    command: &str,
+) -> Result<SshCommandOutput, crate::ssh_exec::CommandRunError> {
+    broadcast_event(
+        &state.app,
+        "tool.started",
+        json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "tool": "remote.shell.exec",
+            "command": command,
+            "requires_approval": false,
+        }),
+    );
+    let output = state.runner.run(
+        &state.app.ssh_target(),
+        &SshCommandRequest {
+            command: command.to_string(),
+            cwd: None,
+            timeout_ms: None,
+            risk: RiskAssessment::low("agent read-only diagnostic command"),
+        },
+    )?;
+    if !output.stdout.is_empty() {
+        broadcast_event(
+            &state.app,
+            "tool.stdout",
+            json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "stdout": output.stdout,
+                "text": output.stdout,
+            }),
+        );
+    }
+    if !output.stderr.is_empty() {
+        broadcast_event(
+            &state.app,
+            "tool.stderr",
+            json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "stderr": output.stderr,
+                "text": output.stderr,
+            }),
+        );
+    }
+    broadcast_event(
+        &state.app,
+        if output.timed_out {
+            "agent.tool.failed"
+        } else {
+            "agent.tool.completed"
+        },
+        json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "tool": "remote.shell.exec",
+            "command": command,
+            "exit_code": output.exit_code,
+            "duration_ms": duration_ms(output.duration),
+            "timed_out": output.timed_out,
+        }),
+    );
+    Ok(output)
+}
+
+fn summarize_shell_output(command: &str, output: &SshCommandOutput) -> String {
+    let exit_code = output
+        .exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut summary = format!("Command `{command}` completed with exit code {exit_code}.");
+    if !output.stdout.is_empty() {
+        summary.push_str("\nstdout:\n");
+        summary.push_str(&output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        summary.push_str("\nstderr:\n");
+        summary.push_str(&output.stderr);
+    }
+    if output.timed_out {
+        summary.push_str("\nCommand timed out.");
+    }
+    summary
+}
+
+fn redact_text(text: &str) -> String {
+    let mut redacted = text.lines().map(redact_line).collect::<Vec<_>>().join("\n");
+    if text.ends_with('\n') {
+        redacted.push('\n');
+    }
+    redacted
+}
+
+fn redact_line(line: &str) -> String {
+    for separator in ['=', ':'] {
+        if let Some((key, _value)) = line.split_once(separator)
+            && is_secret_key(key.trim())
+        {
+            return format!("{}{}[REDACTED]", key, separator);
+        }
+    }
+    line.to_string()
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    ["token", "nonce", "secret", "bearer", "lease", "idempotency"]
+        .iter()
+        .any(|needle| key.contains(needle))
+}

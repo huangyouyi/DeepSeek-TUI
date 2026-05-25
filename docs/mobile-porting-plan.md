@@ -1370,6 +1370,11 @@ W-stage status:
   T6/T7/T9, U6/U7/U9, and V6/V7/V9 stay open until maintainers run the
   checklists on real macOS/Xcode/iOS/Windows environments and copy the
   resulting evidence back into this plan.
+- W5 Linux mobile Web SSH simulator: `crates/mobile-web-server`, `mobile-web/`,
+  and `scripts/mobile_web_*` provide a LAN-accessible phone-shaped Web/API
+  simulator that can run preset SSH diagnostics and approval-gated advanced
+  commands against `root@192.168.30.244`. This is Linux/LAN simulator evidence
+  only; it does not close real iOS, macOS, Windows, or real runner evidence.
 
 W-stage exit requirements:
 
@@ -1382,6 +1387,9 @@ W-stage exit requirements:
    the local scripts are ready.
 4. W4: Leave real macOS, iOS simulator/device, and Windows claims unchanged
    until hardware-backed bundles exist.
+5. W5: Use `docs/mobile-web-ssh-simulator.md` and
+   `scripts/mobile_web_ssh_flow_simulator.py --auto-approve --json` to validate
+   the Linux/LAN Web simulator before moving Web UI behavior to real iOS.
 
 ### Stage 2: Real Rust Bridge
 

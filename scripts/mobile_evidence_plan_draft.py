@@ -8,6 +8,7 @@ docs/mobile-porting-plan.md.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,16 @@ SUMMARY_HEADER = [
     "`mobile-porting-plan.md` updated?",
 ]
 EVIDENCE_BUNDLE_FILENAMES = {"evidence-log.md", "results.md"}
+MOBILE_WEB_SSH_PLATFORM = "Linux/LAN Web SSH Simulator"
+MOBILE_WEB_SSH_MILESTONE = "W5 / LF-M9"
+MOBILE_WEB_SSH_BOUNDARY = (
+    "Linux/LAN Web simulator evidence only; not iOS, macOS, Windows, "
+    "or real mobile-platform evidence."
+)
+MOBILE_WEB_SSH_RESULT_RE = re.compile(
+    r"^-\s+(mobile_web_ssh[\w_]*):\s+(PASS|FAIL)\s+\(exit\s+(-?\d+)\)\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +100,10 @@ def dedupe_paths(paths: list[Path]) -> list[Path]:
 
 def parse_file(path: Path) -> list[SummaryRow]:
     lines = path.read_text(encoding="utf-8").splitlines()
+    mobile_web_ssh_rows = parse_mobile_web_ssh_results(path, lines)
+    if mobile_web_ssh_rows:
+        return mobile_web_ssh_rows
+
     rows: list[SummaryRow] = []
     platform = infer_platform(path, lines, 0)
     index = 0
@@ -121,6 +136,50 @@ def parse_file(path: Path) -> list[SummaryRow]:
         index = next_index
 
     return rows
+
+
+def parse_mobile_web_ssh_results(path: Path, lines: list[str]) -> list[SummaryRow]:
+    if path.name != "results.md":
+        return []
+
+    bundle = path.parent
+    if not (bundle / "evidence-log.md").is_file() or not (bundle / "commands.log").is_file():
+        return []
+
+    content = "\n".join(lines)
+    if MOBILE_WEB_SSH_BOUNDARY not in content or "mobile_web_ssh_" not in content:
+        return []
+
+    command_results: list[tuple[str, str, str]] = []
+    for line in lines:
+        match = MOBILE_WEB_SSH_RESULT_RE.match(line.strip())
+        if match:
+            name, status, exit_code = match.groups()
+            command_results.append((name, status.upper(), exit_code))
+
+    if not command_results:
+        return []
+
+    failed = [name for name, status, _ in command_results if status != "PASS"]
+    passed = [name for name, status, _ in command_results if status == "PASS"]
+    if failed:
+        status = "Fail"
+        next_task = "Investigate failed commands: " + ", ".join(failed)
+    else:
+        status = "Pass"
+        next_task = "None; passed commands: " + ", ".join(passed)
+
+    return [
+        SummaryRow(
+            platform=MOBILE_WEB_SSH_PLATFORM,
+            status=status,
+            milestone=MOBILE_WEB_SSH_MILESTONE,
+            area="Simulator command bundle",
+            next_task=next_task,
+            plan_updated="No",
+            source=path,
+        )
+    ]
 
 
 def parse_summary_table(lines: list[str], start: int) -> tuple[list[list[str]], int]:
@@ -217,6 +276,16 @@ def render_draft(rows: list[SummaryRow], include_source: bool = True) -> str:
         "Generated from result summary tables. Review and copy relevant updates into `docs/mobile-porting-plan.md`; this draft does not edit the plan automatically.",
         "",
     ]
+
+    if any(row.platform == MOBILE_WEB_SSH_PLATFORM for row in rows):
+        lines.extend(
+            [
+                "## Linux/LAN Web SSH Simulator",
+                "",
+                MOBILE_WEB_SSH_BOUNDARY,
+                "",
+            ]
+        )
 
     if include_source:
         lines.append("| Platform | Pass/Fail/Blocker | Milestone | Next task | Plan updated | Source |")
