@@ -75,7 +75,7 @@ impl AppState {
             .values()
             .cloned()
             .collect();
-        sessions.sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
         sessions
     }
 

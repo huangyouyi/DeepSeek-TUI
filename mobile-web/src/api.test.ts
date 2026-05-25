@@ -1,0 +1,62 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  approveCommand,
+  createSession,
+  listMessages,
+  prepareCommand,
+  rejectCommand,
+  runDiagnostic
+} from "./api";
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" }
+  });
+}
+
+describe("api client", () => {
+  it("uses shared contract routes and payload field names", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: "session-1", title: "Mobile SSH" }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse({ status: "queued" }))
+      .mockResolvedValueOnce(jsonResponse({ id: "approval-1" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "approved" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "rejected" }));
+
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    await createSession(api);
+    await listMessages("session-1", api);
+    await runDiagnostic({ sessionId: "session-1", diagnostic: "system_info" }, api);
+    await prepareCommand({ sessionId: "session-1", command: "uptime", cwd: "/tmp" }, api);
+    await approveCommand("approval-1", api);
+    await rejectCommand("approval-2", api);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/sessions",
+      "/api/sessions/session-1/messages",
+      "/api/diagnostics/run",
+      "/api/commands/prepare",
+      "/api/approvals/approval-1/respond",
+      "/api/approvals/approval-2/respond"
+    ]);
+
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      session_id: "session-1",
+      diagnostic: "system_info"
+    });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({
+      session_id: "session-1",
+      command: "uptime",
+      cwd: "/tmp"
+    });
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({
+      response: "approve_once"
+    });
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({
+      response: "reject"
+    });
+  });
+});

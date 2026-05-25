@@ -1,11 +1,20 @@
+pub mod approvals;
+pub mod diagnostics;
+pub mod events;
+pub mod routes;
+pub mod ssh_exec;
 pub mod state;
 pub mod types;
 
+pub use routes::{
+    MobileWebServerConfig, app_router, app_router_with_config, app_router_with_runner,
+};
+pub use ssh_exec::{CommandRunner, SshCommandOutput, SystemSshCommandRunner};
 pub use state::AppState;
 pub use types::{
-    ApiErrorBody, ApprovalRespondRequest, ApprovalResponse, AuditEntry,
-    CommandPrepareRequest, DiagnosticRequest, DiagnosticResponse, HealthResponse, Message,
-    MessagePart, PendingApproval, ServerEvent, SessionSummary, SshTarget,
+    ApiErrorBody, ApprovalRespondRequest, ApprovalResponse, AuditEntry, CommandPrepareRequest,
+    DiagnosticRequest, DiagnosticResponse, HealthResponse, Message, MessagePart, PendingApproval,
+    ServerEvent, SessionSummary, SshTarget,
 };
 
 #[cfg(test)]
@@ -13,9 +22,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::{
-        ApiErrorBody, ApprovalRespondRequest, AuditEntry, CommandPrepareRequest,
-        DiagnosticRequest, HealthResponse, Message, MessagePart, PendingApproval, ServerEvent,
-        SessionSummary, SshTarget,
+        ApiErrorBody, ApprovalRespondRequest, AuditEntry, CommandPrepareRequest, DiagnosticRequest,
+        HealthResponse, Message, MessagePart, PendingApproval, ServerEvent, SessionSummary,
+        SshTarget,
     };
 
     #[test]
@@ -188,7 +197,10 @@ mod tests {
         };
 
         let value = serde_json::to_value(event).expect("event must serialize");
-        assert_eq!(value.get("type"), Some(&Value::String("approval.asked".to_string())));
+        assert_eq!(
+            value.get("type"),
+            Some(&Value::String("approval.asked".to_string()))
+        );
         assert_eq!(value["payload"]["id"], "approval-1");
         assert_eq!(value["payload"]["status"], "pending");
     }

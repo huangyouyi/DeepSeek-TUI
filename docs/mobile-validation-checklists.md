@@ -112,6 +112,42 @@ and UniFFI plan consistency; they do not prove SwiftUI, Keychain, SQLite
 sandbox behavior, Xcode package resolution, simulator launch, signing, local
 network permission, or physical-device behavior.
 
+## Linux Mobile Web SSH Simulator
+
+Goal: validate the LAN-accessible phone-shaped Web/API/SSH control loop on
+Linux before real iOS or real runner evidence. This is simulator evidence only.
+
+Run the Rust server from the repository root:
+
+```bash
+cargo run -p deepseek-mobile-web-server -- \
+  --host 0.0.0.0 \
+  --port 8788 \
+  --ssh-host 192.168.30.244 \
+  --ssh-user root \
+  --ssh-port 22
+```
+
+Run the script checks against the started server:
+
+```bash
+python3 scripts/mobile_web_ssh_smoke.py --server http://127.0.0.1:8788 --json
+python3 scripts/mobile_web_ssh_flow_simulator.py --server http://127.0.0.1:8788 --auto-approve --json
+```
+
+Expected result:
+
+- `/health`, `/event`, `/api/ssh/target`, `/api/sessions`, and
+  `/api/audit/recent` respond.
+- A preset diagnostic executes over SSH.
+- An advanced command can be rejected without execution.
+- A second advanced command can be approved once and executed.
+- Audit output does not expose known token-like sentinel fields.
+
+This does not prove SwiftUI, Xcode, iOS simulator/device, Keychain, iOS local
+network permission, macOS, Windows, real LAN runner pairing, package install,
+browser automation, or production sandbox behavior.
+
 ## macOS Host Checklist
 
 Goal: prove the Swift package, Xcode path, simulator build path, and macOS
