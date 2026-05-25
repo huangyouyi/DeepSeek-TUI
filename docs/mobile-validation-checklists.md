@@ -133,11 +133,26 @@ Run the script checks against the started server:
 ```bash
 python3 scripts/mobile_web_ssh_smoke.py --server http://127.0.0.1:8788 --json
 python3 scripts/mobile_web_ssh_flow_simulator.py --server http://127.0.0.1:8788 --auto-approve --json
+python3 scripts/mobile_web_ai_chat_smoke.py --server http://127.0.0.1:8788 --message "请问当前运行在什么系统？" --model-mode auto --json
 ```
 
 If the Rust server was started with `--access-token <token>`, pass the same
-token to both script checks with `--access-token <token>`. The evidence helper
-redacts that argument in `commands.log`.
+token to the script checks with `--access-token <token>`. The evidence helper
+redacts that argument in `commands.log`; the AI chat helper sends it only as an
+HTTP header and does not print it.
+
+Before a live model run, validate the AI chat script against its fake-server
+coverage:
+
+```bash
+python3 scripts/mobile_web_ai_chat_smoke_test.py
+```
+
+For live AI chat evidence, the OS question should complete with a non-empty
+assistant answer and no `not found` text. Use `--model-config <path>` only for
+an isolated test config; do not read or modify the real
+`~/.deepseek/config.toml` during validation. Add `--auto-approve` only when the
+run is intentionally validating the first pending high-risk approval path.
 
 For the final repeatable Linux/Web/Rust/SSH control-chain verification, start
 the Rust server first, then run one evidence command:

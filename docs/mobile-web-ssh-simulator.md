@@ -109,6 +109,33 @@ Run the script smoke test without a real SSH host:
 python3 scripts/mobile_web_ssh_flow_simulator_smoke.py
 ```
 
+Smoke-check the AI chat agent-turn route with a running server:
+
+```bash
+python3 scripts/mobile_web_ai_chat_smoke.py \
+  --server http://127.0.0.1:8788 \
+  --message "请问当前运行在什么系统？" \
+  --model-mode auto \
+  --json
+```
+
+Use `--model-mode mock` for fake-server validation and `--model-mode deepseek`
+only when the running server is explicitly configured for a real model. If the
+server requires authorization, pass `--access-token "$MOBILE_WEB_TOKEN"`. The
+helper sends the token only as an HTTP header and does not print it. To point a
+live run at an isolated model config, pass `--model-config <path>`; do not use
+or modify the real `~/.deepseek/config.toml` for smoke evidence.
+
+When the AI chat turn returns a high-risk pending approval, add
+`--auto-approve` to approve the first pending approval once and require an
+assistant summary from the approval response.
+
+Run the AI chat fake-server smoke test without a real SSH host or model:
+
+```bash
+python3 scripts/mobile_web_ai_chat_smoke_test.py
+```
+
 Create a Linux/LAN Web simulator evidence folder for a live server:
 
 ```bash
