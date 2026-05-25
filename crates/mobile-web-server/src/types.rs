@@ -102,6 +102,30 @@ pub struct PendingApproval {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTurnRequest {
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentExecutedTool {
+    pub tool: String,
+    pub command: String,
+    pub requires_approval: bool,
+    pub exit_code: Option<i32>,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTurnResponse {
+    pub session_id: String,
+    pub turn_id: String,
+    pub status: String,
+    pub assistant_text: String,
+    pub executed_tools: Vec<AgentExecutedTool>,
+    pub pending_approvals: Vec<PendingApproval>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalRespondRequest {
     pub response: String,
 }

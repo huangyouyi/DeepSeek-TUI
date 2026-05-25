@@ -94,6 +94,27 @@ export type PendingApproval = {
   status: string;
 };
 
+export type AgentTurnRequest = {
+  message: string;
+};
+
+export type AgentExecutedTool = {
+  tool: string;
+  command: string;
+  requires_approval: boolean;
+  exit_code: number | null;
+  status: string;
+};
+
+export type AgentTurnResponse = {
+  session_id: string;
+  turn_id: string;
+  status: string;
+  assistant_text: string;
+  executed_tools: AgentExecutedTool[];
+  pending_approvals: PendingApproval[];
+};
+
 export type ApprovalRespondRequest = {
   response: "approve_once" | "reject";
 };
