@@ -14,7 +14,7 @@ fn shell_call(command: &str) -> RemoteToolCall {
 
 #[test]
 fn agent_tool_policy_allows_known_read_only_diagnostic_commands() {
-    let decision = AgentToolPolicy::default().classify(&shell_call("uname -a"));
+    let decision = AgentToolPolicy.classify(&shell_call("uname -a"));
 
     assert_eq!(
         decision,
@@ -27,7 +27,7 @@ fn agent_tool_policy_allows_known_read_only_diagnostic_commands() {
 
 #[test]
 fn agent_tool_policy_requires_approval_for_arbitrary_shell_commands() {
-    let decision = AgentToolPolicy::default().classify(&shell_call("opkg update"));
+    let decision = AgentToolPolicy.classify(&shell_call("opkg update"));
 
     assert_eq!(
         decision,
@@ -40,7 +40,7 @@ fn agent_tool_policy_requires_approval_for_arbitrary_shell_commands() {
 
 #[test]
 fn agent_tool_policy_preserves_optional_cwd_for_approval() {
-    let decision = AgentToolPolicy::default().classify(&RemoteToolCall {
+    let decision = AgentToolPolicy.classify(&RemoteToolCall {
         call_id: "call-1".to_string(),
         name: RemoteToolName::ShellExec,
         arguments: json!({ "command": "cat config", "cwd": "/etc" }),
@@ -57,7 +57,7 @@ fn agent_tool_policy_preserves_optional_cwd_for_approval() {
 
 #[test]
 fn agent_tool_policy_rejects_unknown_or_malformed_tool_calls_without_execution() {
-    let policy = AgentToolPolicy::default();
+    let policy = AgentToolPolicy;
 
     assert!(matches!(
         policy.classify(&RemoteToolCall {
