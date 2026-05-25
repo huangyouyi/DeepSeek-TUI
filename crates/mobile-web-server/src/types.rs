@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -90,15 +94,89 @@ pub struct CommandPrepareRequest {
     pub cwd: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingApproval {
     pub id: String,
     pub session_id: String,
     pub command: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub created_at_ms: u64,
     pub status: String,
+}
+
+impl PendingApproval {
+    #[must_use]
+    pub(crate) fn agent_turn_id(&self) -> Option<String> {
+        agent_approval_origins()
+            .lock()
+            .expect("agent approval origin mutex must not be poisoned")
+            .get(&self.id)
+            .cloned()
+    }
+}
+
+impl Serialize for PendingApproval {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let agent_turn_id = self.agent_turn_id();
+        let mut state = serializer
+            .serialize_struct("PendingApproval", 6 + usize::from(agent_turn_id.is_some()))?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("session_id", &self.session_id)?;
+        state.serialize_field("command", &self.command)?;
+        if let Some(cwd) = &self.cwd {
+            state.serialize_field("cwd", cwd)?;
+        }
+        state.serialize_field("created_at_ms", &self.created_at_ms)?;
+        state.serialize_field("status", &self.status)?;
+        if let Some(agent_turn_id) = agent_turn_id {
+            state.serialize_field("agent_turn_id", &agent_turn_id)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PendingApproval {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PendingApprovalFields {
+            id: String,
+            session_id: String,
+            command: String,
+            #[serde(default)]
+            cwd: Option<String>,
+            created_at_ms: u64,
+            status: String,
+            #[serde(default)]
+            agent_turn_id: Option<String>,
+        }
+
+        let fields = PendingApprovalFields::deserialize(deserializer)?;
+        if let Some(agent_turn_id) = fields.agent_turn_id {
+            agent_approval_origins()
+                .lock()
+                .expect("agent approval origin mutex must not be poisoned")
+                .insert(fields.id.clone(), agent_turn_id);
+        }
+        Ok(Self {
+            id: fields.id,
+            session_id: fields.session_id,
+            command: fields.command,
+            cwd: fields.cwd,
+            created_at_ms: fields.created_at_ms,
+            status: fields.status,
+        })
+    }
+}
+
+fn agent_approval_origins() -> &'static Mutex<HashMap<String, String>> {
+    static ORIGINS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    ORIGINS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

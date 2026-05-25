@@ -8,8 +8,8 @@ use uuid::Uuid;
 use crate::events::broadcast_event;
 use crate::ssh_exec::{CommandRunError, CommandRunner, SshCommandOutput};
 use crate::{
-    AppState, ApprovalRespondRequest, ApprovalResponse, AuditEntry, CommandPrepareRequest,
-    PendingApproval,
+    AppState, ApprovalRespondRequest, ApprovalResponse, AuditEntry, CommandPrepareRequest, Message,
+    MessagePart, PendingApproval,
 };
 
 #[derive(Clone, Debug)]
@@ -62,6 +62,7 @@ where
         match request.response.as_str() {
             "reject" => {
                 approval.status = "rejected".to_string();
+                append_agent_rejection_summary(state, &approval);
                 state.push_audit(approval_audit(&approval, "rejected", json!({})));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
@@ -74,6 +75,7 @@ where
                 let output = self.execute_approval(state, &approval)?;
                 let result = command_result(&approval.command, &output);
                 approval.status = "approved".to_string();
+                append_agent_approval_summary(state, &approval, &output);
                 state.push_audit(approval_audit(&approval, "approved", result.clone()));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
@@ -196,6 +198,87 @@ fn approval_audit(approval: &PendingApproval, action: &str, result: Value) -> Au
             "result": redact_value(&result),
         }),
     }
+}
+
+fn append_agent_approval_summary(
+    state: &AppState,
+    approval: &PendingApproval,
+    output: &SshCommandOutput,
+) {
+    let Some(agent_turn_id) = approval.agent_turn_id() else {
+        return;
+    };
+    append_agent_summary_message(
+        state,
+        approval,
+        agent_turn_id,
+        approved_agent_summary(&approval.command, output),
+    );
+}
+
+fn append_agent_rejection_summary(state: &AppState, approval: &PendingApproval) {
+    let Some(agent_turn_id) = approval.agent_turn_id() else {
+        return;
+    };
+    append_agent_summary_message(
+        state,
+        approval,
+        agent_turn_id,
+        format!(
+            "Rejected command `{}`; it was not executed.",
+            approval.command
+        ),
+    );
+}
+
+fn append_agent_summary_message(
+    state: &AppState,
+    approval: &PendingApproval,
+    agent_turn_id: String,
+    text: String,
+) {
+    let message = Message {
+        id: format!("message-{}", Uuid::new_v4()),
+        session_id: approval.session_id.clone(),
+        role: "assistant".to_string(),
+        created_at_ms: now_ms(),
+        parts: vec![MessagePart {
+            id: format!("part-{}", Uuid::new_v4()),
+            kind: "text".to_string(),
+            text: Some(text),
+            data: json!({
+                "approval_id": approval.id,
+                "agent_turn_id": agent_turn_id,
+                "command": approval.command,
+            }),
+        }],
+    };
+    state.push_message(message.clone());
+    broadcast_event(
+        state,
+        "message.updated",
+        serde_json::to_value(&message).expect("message must serialize"),
+    );
+}
+
+fn approved_agent_summary(command: &str, output: &SshCommandOutput) -> String {
+    let exit_code = output
+        .exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut summary = format!("Approved command `{command}` completed with exit code {exit_code}.");
+    if !output.stdout.is_empty() {
+        summary.push_str("\nstdout:\n");
+        summary.push_str(&redact_text(&output.stdout));
+    }
+    if !output.stderr.is_empty() {
+        summary.push_str("\nstderr:\n");
+        summary.push_str(&redact_text(&output.stderr));
+    }
+    if output.timed_out {
+        summary.push_str("\nCommand timed out.");
+    }
+    summary
 }
 
 fn command_result(command: &str, output: &SshCommandOutput) -> Value {
