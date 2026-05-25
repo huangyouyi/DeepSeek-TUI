@@ -1,6 +1,7 @@
 pub mod approvals;
 pub mod diagnostics;
 pub mod events;
+pub mod model_config;
 pub mod routes;
 pub mod ssh_exec;
 pub mod state;
