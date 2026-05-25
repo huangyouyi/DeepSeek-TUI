@@ -1,811 +1,720 @@
-# deepseek-tui 手机端 Agent Core 移植可行性分析与改造设计
+# deepseek-tui 手机端 Agent Core 移植计划
 
-本文档基于当前代码库的真实结构，评估将 `deepseek-tui` 拆成可在 iOS 上运行的轻量 Agent Core 与桌面/服务器/runner 执行层的可行性。目标不是复用终端 UI，而是复用 Agent loop、会话状态、审批、工具调度、LLM 云端调用和远程工具协议。
+本文档合并了两份 `docs/mobile-porting-plan.md` 的内容。重复的架构判断、风险说明、MVP 路线和结论已去重；英文版本中独有的当前实现状态、验证阶段、任务树和里程碑已翻译为中文。英文专有名词如 `DeepSeek TUI`、`Agent Core`、`mobile-agent-core`、`kai-runner`、`UniFFI`、`MCP`、`SSH`、`PowerShell` 保留原文。
 
-结论：当前 `deepseek-tui` 不适合直接作为 iOS core。workspace 已经有 `crates/protocol`、`crates/tools`、`crates/execpolicy`、`crates/state`、`crates/core` 等拆分雏形，但真实的生产 Agent loop 仍主要在 `crates/tui/src/core/engine*`，并强依赖本地 shell、PTY、文件系统、LSP、MCP stdio、TUI 事件和桌面快照。推荐路径是先抽象工具执行边界，再新建 `mobile-agent-core`，复用协议/模型/审批思想，避免把 `crates/tui` 整体搬进 iOS。
+核心结论：不要把 `DeepSeek TUI` 原样移植到 iOS。正确路线是新建轻量的手机端 `mobile-agent-core`，让它负责对话、规划、审批、会话状态、模型调用和远程工具调度；电脑侧通过 SSH/PowerShell、轻量 `kai-runner` 或 remote MCP 执行 shell/file/git/browser/LSP 等平台相关工具。
 
-## 1. 当前架构梳理
+## 执行摘要
+
+`DeepSeek TUI` 是很有价值的架构参考，但不是直接 iOS port 的合适起点。当前生产 runtime 仍集中在 `crates/tui`，Agent turn、工具执行、本地 shell、文件系统、MCP stdio、LSP、任务状态和终端 UI 耦合较深。workspace 中较新的 `crates/protocol`、`crates/tools`、`crates/execpolicy`、`crates/state`、`crates/agent`、`crates/app-server` 已经提供了可复用边界，但还不是完整生产 Agent loop 的来源。
+
+推荐策略：
+
+1. 新建 `mobile-agent-core`，承载手机端 Agent loop、session state、event stream、approval gate、model client trait、persistence trait 和 remote tool dispatcher。
+2. iOS 端不包含本地 shell、文件修改、PTY、本地 LSP、桌面 sandbox、本地 MCP stdio spawn 和终端 UI。
+3. 手机工作流只暴露 remote tools；本地桌面工具实现保留在 runner 或桌面 runtime。
+4. 支持从 manual bootstrap，到 SSH/PowerShell，到轻量 `kai-runner`，再到 remote MCP/browser automation 的能力升级。
+
+适配度判断：
+
+| 角色 | 适配度 | 原因 |
+|---|---|---|
+| `DeepSeek TUI` 作为手机端 `Agent Core` | Low/Medium | 协议、审批、session、工具目录经验可复用，但当前 live agent loop 太依赖桌面本地执行。 |
+| `DeepSeek TUI` 作为电脑侧 runner 参考 | Medium-High | shell/file/git/MCP/runtime API 等实现很有价值，但需要瘦身和安全加固。 |
+| `DeepSeek TUI` 作为架构参考 | High | event model、approval flow、tool registry、session persistence 直接相关。 |
+
+建议继续一周 technical spike，但不要做完整产品。Spike 应证明 iOS demo 能运行 Agent loop、持久化 session、发起审批，并通过 bootstrap 文本和 SSH transport 执行一个远程诊断命令。
+
+## 产品定位
+
+目标不是“把 Rust TUI 编译到 iOS”，而是做一个手机端电脑救援 Agent。核心价值是：当用户电脑还不能运行完整 Agent、环境损坏、安装器失败、命令行工具缺失、浏览器下载失败、权限/网络/证书/包管理器异常时，手机端仍能承担对话、规划、审批、状态管理和下一步指导。
+
+产品前提：
+
+- 电脑一开始可能没有 Node、Bun、Go、Rust、Python，也可能没有可用包管理器或远程连接。
+- 用户可能只能在电脑终端手动执行一两条命令，再把输出复制、粘贴或拍照 OCR 回手机。
+- 手机端必须轻量、可靠、独立，不能依赖电脑端已经安装完整 runtime。
+- 电脑端能力应从“无 Agent”逐步升级到“SSH/PowerShell 可执行”，再升级到“轻量 runner”。
+- 核心工作流是文本、命令、日志和结构化结果；RDP/VNC/截图/视频流不是核心控制平面。
+- LLM 推理通过云端 API 完成，不在手机本地运行大模型。
+
+这改变了对 `DeepSeek TUI` 的判断标准。`DeepSeek TUI` 默认 Agent 与工具执行在同一台机器；手机救援产品要求 Agent 先在手机上独立成立，再把电脑视为能力逐步增长的远端 target。
+
+## 当前架构
 
 当前 workspace 结构：
 
-- `crates/cli`：`deepseek` dispatcher，负责命令入口和分发到 TUI/runtime/MCP 等模式。
-- `crates/tui`：当前生产运行时主体。包含 TUI、Agent engine、DeepSeek client、工具实现、MCP、LSP、runtime API、会话快照、任务、子代理、RLM 等。
-- `crates/protocol`：线程、工具 payload/output、事件、审批请求等可序列化协议类型。
-- `crates/tools`：较新的共享工具调用抽象，包括 `ToolRegistry`、`ToolHandler`、`ToolCall`、`ToolResult`、并行执行约束。
-- `crates/execpolicy`：命令审批策略、allow/deny 前缀规则、approval requirement。
-- `crates/state`：SQLite thread/message/checkpoint/job 持久化。
-- `crates/core`：较新的 runtime boundary，但当前更像 app-server/runtime scaffold；`handle_prompt` 目前只做模型解析和持久化 payload，不是 `crates/tui` 中完整流式 Agent loop。
-- `crates/mcp`：较新的 MCP manager 抽象，主要是 in-memory/管理接口；完整 async stdio/HTTP MCP 实现在 `crates/tui/src/mcp.rs`。
-- `crates/app-server`：HTTP/stdio JSON-RPC wrapper，持有 `deepseek_core::Runtime`。
-- `crates/secrets`：OS keyring/file fallback。
-- `crates/tui-core`：TUI 状态机 scaffold。
-
-当前文本架构图：
-
 ```text
-deepseek CLI dispatcher (crates/cli)
-    |
-    +--> interactive runtime (crates/tui)
-    |       |
-    |       +--> TUI UI: ratatui/crossterm, approval modal, input handling
-    |       |
-    |       +--> Engine: crates/tui/src/core/engine.rs
-    |       |       +--> turn loop: core/engine/turn_loop.rs
-    |       |       +--> approval wait: core/engine/approval.rs
-    |       |       +--> tool dispatch: core/engine/tool_execution.rs
-    |       |       +--> session: core/session.rs
-    |       |       +--> events: core/events.rs
-    |       |
-    |       +--> LLM client: client.rs + llm_client/mod.rs
-    |       |
-    |       +--> Tool registry: tools/registry.rs
-    |       |       +--> shell/PTY: tools/shell.rs
-    |       |       +--> file/edit/search/git: tools/file.rs, search.rs, git.rs
-    |       |       +--> web/fetch/finance: tools/web_*.rs, fetch_url.rs
-    |       |       +--> tasks/subagents/RLM/review/automation/github
-    |       |
-    |       +--> Local execution dependencies
-    |               +--> std::process / portable-pty
-    |               +--> local filesystem
-    |               +--> local MCP stdio process spawn
-    |               +--> local LSP server stdio
-    |               +--> macOS/Linux/Windows sandbox backends
-    |
-    +--> runtime API (crates/tui/src/runtime_api.rs)
-    |       +--> HTTP/SSE local server, approvals endpoint, thread/task APIs
-    |
-    +--> MCP server/client modes
-            +--> stdio server and local/HTTP MCP clients
-
-new split crates (partial, not production source of truth yet)
-    |
-    +--> crates/protocol: serializable frames and event schema
-    +--> crates/tools: generic tool dispatch abstraction
-    +--> crates/execpolicy: approval policy engine
-    +--> crates/state: SQLite persistence
-    +--> crates/core: runtime boundary scaffold
-    +--> crates/app-server: HTTP/stdio wrapper over crates/core
+deepseek CLI dispatcher
+  ├─ crates/cli
+  │    └─ 启动 deepseek-tui、app-server、mcp-server、doctor、config 等命令
+  │
+  ├─ crates/tui
+  │    ├─ core/engine.rs、core/turn.rs、core/session.rs、core/events.rs
+  │    │    └─ live interactive agent loop、turn、取消、event emission
+  │    ├─ client.rs、llm_client/
+  │    │    └─ DeepSeek/OpenAI-compatible streaming chat completions
+  │    ├─ tools/
+  │    │    └─ shell、file、git、browser/web、plan、task、subagent、RLM、OCR
+  │    ├─ mcp.rs、mcp_server.rs
+  │    │    └─ local MCP client/server、stdio spawn、HTTP MCP
+  │    ├─ lsp/
+  │    │    └─ 文件修改后按需 spawn 本地 LSP server
+  │    ├─ sandbox/
+  │    │    └─ macOS Seatbelt、Linux Landlock、Windows helper contracts
+  │    ├─ runtime_api.rs、runtime_threads.rs、task_manager.rs
+  │    │    └─ local HTTP/SSE runtime API 和 durable task timeline
+  │    └─ tui/
+  │         └─ ratatui UI、approval modal、command palette、history、rendering
+  │
+  ├─ crates/protocol
+  │    └─ ThreadRequest/Response、ToolPayload、ToolOutput、EventFrame、approval events
+  ├─ crates/tools
+  │    └─ generic ToolRegistry、ToolHandler、ToolCall、ToolSpec、ToolResult
+  ├─ crates/execpolicy
+  │    └─ command approval policy、trusted/denied prefixes、approval decisions
+  ├─ crates/state
+  │    └─ SQLite thread/session/message/checkpoint/job persistence
+  ├─ crates/core
+  │    └─ 较新的 runtime boundary，但还不是完整 live TUI engine
+  ├─ crates/app-server
+  │    └─ HTTP/JSON-RPC wrapper over crates/core Runtime
+  └─ crates/secrets、crates/config、crates/hooks、crates/agent、crates/tui-core
 ```
 
-关键文件：
+重要现实：
 
-- Agent loop/session/conversation/planning：`crates/tui/src/core/engine.rs`、`core/engine/turn_loop.rs`、`core/session.rs`、`tools/plan.rs`、`tools/todo.rs`。
-- 协议/事件/tool schema：`crates/protocol/src/lib.rs`、`crates/tui/src/core/events.rs`、`crates/tui/src/models.rs`、`crates/tui/src/tools/spec.rs`。
-- exec policy/approval：`crates/execpolicy/src/lib.rs`、`crates/tui/src/core/engine/approval.rs`、`crates/tui/src/tools/approval_cache.rs`、`crates/tui/src/runtime_api.rs` 的 `/v1/approvals/{approval_id}`。
-- MCP：`crates/tui/src/mcp.rs`、`crates/mcp/src/lib.rs`、`crates/tui/src/mcp_server.rs`。
-- app-server/HTTP/SSE：`crates/tui/src/runtime_api.rs`、`crates/app-server/src/lib.rs`。
-- state/persistence：`crates/state/src/lib.rs`、`crates/tui/src/runtime_threads.rs`、`crates/tui/src/session_manager.rs`、`crates/tui/src/snapshot/*`。
-- tools：`crates/tui/src/tools/registry.rs`、`shell.rs`、`file.rs`、`apply_patch.rs`、`git.rs`、`web_run.rs`、`fetch_url.rs`、`diagnostics.rs`、`subagent/*`、`rlm.rs`。
-- TUI/CLI：`crates/tui/src/main.rs`、`crates/tui/src/tui/*`、`crates/cli/src/*`。
+- `docs/ARCHITECTURE.md` 仍把 `crates/tui` 作为真实 end-user runtime。
+- `crates/core` 有 thread、state、job、tool、approval、event 边界，但 `handle_prompt` 仍偏 scaffold，不包含 `crates/tui/src/core` 中完整的 streaming LLM/tool loop。
+- `crates/tui/src/tools/spec.rs` 说明直接 iOS port 风险很高：tool context 包含 workspace path、shell manager、sandbox backend、network policy、memory file path、local LSP manager 和 large-output routing。
+- `crates/tui/src/tools/shell.rs` 使用本地 process spawn、PTY、process group、stdin、cancellation、sandbox 和平台分支代码。
+- `crates/tui/src/lsp` 需要通过 stdio spawn 本地 language server。
+- `crates/tui/src/mcp.rs` 的 HTTP MCP 思路对 runner 有用；stdio spawn 不适合手机端。
 
-## 2. iOS 可移植性分级
+## iOS 可移植性分级
 
-| 模块 | 分级 | 原因 | 处理建议 |
-|---|---|---|---|
-| `crates/protocol` | Portable | 主要是 `serde` 类型，包含 thread/event/tool/approval frame；仅 `PathBuf` 需要跨端语义收敛 | 复用并增加 mobile/remote tool 事件 |
-| `crates/execpolicy` | Portable | 纯 Rust 策略判断，适合在手机端决定是否需要审批 | 改名/泛化为 tool risk policy，不只判断 shell prefix |
-| `crates/agent` model registry | Portable | 模型/provider 解析逻辑轻量 | 复用，避免桌面配置路径假设 |
-| `crates/tools` 抽象 | Needs Adapter | `ToolRegistry`/`ToolHandler` 可用，但 `ToolPayload::LocalShell` 偏本地执行 | 增加 `RemoteTool` payload 或把 transport 注入 handler |
-| `crates/state` | Needs Adapter | SQLite 模型适合 iOS，但当前使用 `dirs`、本地路径、同步 `rusqlite` | 抽出 `Persistence` trait；iOS 实现用 app sandbox SQLite |
-| `crates/secrets` | Needs Adapter | iOS 应使用 Keychain；当前 macOS/Linux/Windows keyring cfg 不覆盖 iOS | 增加 iOS Keychain backend 或由 Swift 层注入 token |
-| `crates/tui/src/client.rs` / `llm_client` | Needs Adapter | `reqwest`/SSE 逻辑可移植性取决于 iOS TLS/runtime；API 形状有价值 | 抽成 `ModelClient` trait；iOS 可用 Rust reqwest/rustls 或 Swift URLSession adapter |
-| `crates/tui/src/core/session.rs` | Needs Adapter | 会话字段有价值，但含 workspace、project context、approval mode、working set 等桌面语义 | 拆出 mobile `SessionState`，workspace 改为 remote target context |
-| `crates/tui/src/core/engine/turn_loop.rs` | Needs Adapter | 是核心 Agent loop，但耦合 LSP、capacity、compaction、TUI events、local tool registry | 移植算法，不搬文件；先抽 `ToolExecutor`、`EventSink`、`ModelClient` |
-| `crates/tui/src/core/events.rs` | Needs Adapter | 事件概念好，但有 `PauseEvents/ResumeEvents`、TUI-only、subagent UI payload | 在 `protocol` 中定义 mobile-safe event stream |
-| `crates/tui/src/tools/plan.rs` / `todo.rs` | Portable | 内存状态和 schema 轻量，可用于手机端规划/清单 | 移到 core 或重写为 core planner state |
-| `crates/tui/src/runtime_api.rs` | Desktop Only for iOS app; useful for runner | 是本地 HTTP/SSE server，绑定端口，调用本地 runtime 和本地文件/git | iOS 不内嵌 server；可作为电脑 runner API 参考 |
-| `crates/app-server` | Desktop/Server Only | axum server/stdio JSON-RPC wrapper，适合作 headless desktop process | 可演化为 runner，不进 iOS |
-| `crates/tui/src/tools/shell.rs` | Desktop Only | `std::process`、PTY、process group、sandbox、stdin、background job | 手机端只能通过 remote transport 调用 |
-| `crates/tui/src/tools/file.rs` / `apply_patch.rs` / `search.rs` | Desktop Only for target files | 直接访问本地工作区和外部命令 OCR/PDF fallback | 逻辑可在 runner 侧保留；手机端只持 schema/stubs |
-| `crates/tui/src/tools/git.rs` / `github.rs` | Desktop Only for git; Needs Adapter for GitHub API | git 工具 shell out 到 `git`/`gh`，依赖本机 repo | runner 侧执行；GitHub API 可后续云端/手机直连但不是 MVP |
-| `crates/tui/src/lsp/*` | Desktop Only | LSP server stdio spawn，不适合 iOS | runner 侧可提供 `remote.diagnose.*` 或 remote MCP |
-| `crates/tui/src/mcp.rs` stdio | Desktop Only | stdio server spawn 和本地 config 文件 | 手机端只支持 MCP over HTTP/SSE 或通过 runner 代理 |
-| `crates/tui/src/mcp.rs` HTTP transport 思路 | Needs Adapter | HTTP MCP transport 方向适合手机，但当前代码在 TUI crate 且含本地 config/network approval | 抽到 `remote-mcp-client`，去掉本地 spawn |
-| `crates/tui/src/tui/*`、`ratatui/crossterm` | Desktop Only | 终端 UI、raw mode、alt screen、keyboard | 不进 mobile core |
-| `crates/tui/src/repl/*`、`rlm/*` | Desktop Only / Later | Python REPL、本地大上下文工具、子模型调用复杂 | MVP 不进手机；可由云端/runner 代理 |
-| `crates/tui/src/sandbox/*` | Desktop Only | macOS Seatbelt/Linux Landlock/Windows helper 语义 | runner 侧执行；手机端只表达 policy intent |
-| `crates/tui/src/snapshot/*` | Desktop Only | side-git workspace 快照依赖桌面文件系统和 git | runner 侧可保留；手机端只记录 checkpoint metadata |
-| `crates/tui/src/tools/web_run.rs` / browser automation | Desktop Only for click/open | 手机端不应控制桌面截图流；无本地浏览器自动化 | 通过 runner/browser service 暴露结构化 browser tools |
+| 模块或文件区域 | 分级 | 原因与处理建议 |
+|---|---|---|
+| `crates/protocol/src/lib.rs` | Portable | 主要是 `serde` protocol types。需要加入 mobile-specific remote tool payload 和 event variant。 |
+| `crates/tools/src/lib.rs` | Portable | 通用 async registry 和 tool result 抽象可复用；避免引入 local executor 假设。 |
+| `crates/execpolicy/src/lib.rs` | Needs Adapter | command approval core 有价值，但风险模型要扩展到 remote action、OS-specific hazard 和 tool class。 |
+| `crates/agent` | Portable | model/provider registry 轻量，适合复用。 |
+| `crates/config` | Needs Adapter | 使用桌面路径和配置文件；iOS 应由 Swift/Keychain/app storage 注入。 |
+| `crates/secrets` | Needs Adapter | iOS 应使用 Keychain，可由 Swift 层或 iOS-specific Rust binding 注入。 |
+| `crates/state` | Needs Adapter | SQLite schema 有价值，但路径发现和桌面 session 字段需要抽象。 |
+| `crates/hooks` | Needs Adapter | audit/event sink 思路有用；webhook/stdout hooks 不应是手机 core 默认项。 |
+| `crates/core` | Needs Adapter | runtime boundary 有价值，但不是完整 live agent loop，并依赖 config/MCP/state/hooks。 |
+| `crates/app-server` | Desktop/Runner Only | 手机应消费 remote transport，不应把本地 Axum server 作为 core integration surface。 |
+| `crates/mcp` | Needs Adapter | HTTP/SSE MCP 概念相关；stdio MCP spawn 留在 runner。 |
+| `crates/tui/src/core/engine.rs` | Needs Adapter | 真实 Agent loop 在这里，但依赖 TUI app mode、本地 tool context、snapshot、LSP、subagent、shell manager、workspace。 |
+| `crates/tui/src/core/session.rs`、`core/turn.rs`、`core/events.rs` | Needs Adapter | turn/session/event 思路可复用，但要去掉 filesystem snapshot 和 TUI event 假设。 |
+| `crates/tui/src/client.rs`、`llm_client/`、`models.rs` | Needs Adapter | 云端 model client 需要复用形状；要移除桌面 config 假设，并暴露 Swift-friendly async boundary。 |
+| `crates/tui/src/tools/plan.rs`、`todo.rs`、`handle.rs` | Portable/Needs Adapter | planning/checklist/handle 思路有用；要脱离 TUI-specific state 和 large-output store path。 |
+| `crates/tui/src/tools/shell.rs` | Desktop Only | 本地 process、PTY、stdin、process group、sandbox；只应在 runner 侧执行。 |
+| `crates/tui/src/tools/file.rs`、`apply_patch.rs`、`git.rs` | Desktop/Runner Only | 直接操作本地 workspace/git；手机只调用 `remote.file.*` 和 runner tools。 |
+| `crates/tui/src/lsp/*` | Desktop/Runner Only | 依赖本地 LSP server binary 和 stdio。 |
+| `crates/tui/src/sandbox/*` | Desktop/Runner Only | macOS/Linux/Windows sandbox 是目标电脑 concern。 |
+| `crates/tui/src/runtime_api.rs`、`runtime_threads.rs`、`task_manager.rs` | Needs Adapter | event/timeline 模型有用；本地 server 和本地 task execution 不进 iOS core。 |
+| `crates/tui/src/tui/*` | Desktop Only | ratatui、keyboard、clipboard、terminal rendering、approval modal；iOS 用原生 Swift UI。 |
+| `crates/tui/src/repl/*`、`rlm/*`、`subagent/*` | Desktop/Cloud Only for MVP | Python REPL/RLM/subagents 太重，MVP 不进手机 core。 |
+| `crates/cli` | Desktop Only | CLI dispatcher 和安装形态不是 iOS app 的组成部分。 |
 
-## 3. 推荐目标架构
-
-目标架构：
+## 推荐目标架构
 
 ```text
-iOS App
-    |
-    v
-mobile-agent-core
-    |
-    +--> model client
-    |       +--> DeepSeek/OpenAI-compatible cloud API
-    |
-    +--> approval gate
-    |       +--> Swift UI approval sheet / notification / biometric optional
-    |
-    +--> remote tool transport
-            |
-            +--> SSH transport
-            +--> bootstrap manual guide transport
-            +--> HTTPS/WebSocket kai-runner transport
-            +--> MCP over HTTP/SSE transport
-                    |
-                    v
-            target computer
-                +--> bootstrap script/session
-                +--> kai-runner lightweight daemon
-                +--> remote MCP servers
-                +--> shell/file/git/browser/LSP execution
+iOS App (Swift/SwiftUI)
+  ├─ chat、command cards、approval sheets、connection setup、OCR/paste import
+  ├─ Keychain credentials、SQLite app storage、Network.framework/URLSession
+  └─ Rust FFI boundary
+        │
+        ▼
+mobile-agent-core (Rust)
+  ├─ Agent loop
+  ├─ session state + message history
+  ├─ planner/checklist state
+  ├─ model client trait
+  ├─ approval gate + risk classifier
+  ├─ remote tool dispatcher
+  ├─ event stream model
+  └─ persistence abstraction
+        │
+        ├──────────────► Cloud model API
+        │
+        ▼
+Remote Tool Transport trait
+  ├─ ManualBootstrapTransport
+  ├─ SshTransport
+  ├─ PowerShellTransport
+  ├─ RunnerWebSocketTransport
+  └─ RemoteMcpTransport
+        │
+        ▼
+Target computer
+  ├─ no agent: 用户手动运行命令并回传文本/OCR 输出
+  ├─ SSH/PowerShell: 有边界的命令执行和日志采集
+  ├─ kai-runner: tools、browser automation、files、logs、capability discovery
+  └─ remote MCP servers: runner 暴露的可选高层工具
 ```
 
 职责划分：
 
-- iOS App：Swift/SwiftUI UI、输入框、会话列表、审批弹窗、远程目标配置、Keychain、后台/前台生命周期、网络权限说明。
-- `mobile-agent-core`：纯 Agent runtime。负责会话、消息、规划、工具调用决策、审批 gate、事件流、重试、持久化抽象、远程工具 schema。它不知道 UIKit/SwiftUI，也不直接碰本地 shell。
-- model client：通过云端 API 进行推理，支持流式 response、thinking block、tool calls、reasoning replay。手机只做网络调用，不做本地大模型推理。
-- approval gate：统一处理高风险 tool call，包括命令执行、写文件、安装包、浏览器点击、MCP mutation。审批结果进入 core，core 再调 transport。
-- remote tool transport：把 model tool call 转成远程请求。初期支持 SSH 和手动 bootstrap；稳定后优先 runner/WebSocket 或 MCP over HTTP/SSE。
-- SSH/bootstrap/kai-runner/remote MCP：电脑侧执行层。负责真实 shell、文件、git、browser、MCP stdio、LSP、sandbox、日志裁剪和 capability discovery。
-- target computer：用户 Mac/Linux/Windows。所有危险和平台相关操作发生在这里。
+- iOS App：原生 UI、连接 onboarding、approval UX、QR/paste/OCR import、本地通知、Keychain、SQLite 位置和后台恢复体验。
+- `mobile-agent-core`：确定性的 Agent state machine。不能假设 shell、child process、terminal、PTY、桌面文件系统或本地 MCP server。
+- model client：DeepSeek/OpenAI-compatible cloud chat completions streaming，支持 DeepSeek V4 thinking，并在 tool call 后保留 reasoning content。
+- approval gate：执行前评估每个 remote tool call，产出结构化 approval request 给 Swift UI。
+- remote tool transport：把批准后的 tool call 转为 manual instructions、SSH commands、PowerShell commands、runner RPC calls 或 remote MCP calls。
+- target computer：在当前可用能力级别执行工具。
 
-## 4. `mobile-agent-core` 边界
+## `mobile-agent-core` 边界
 
-手机端 core 应包含：
+`mobile-agent-core` 应包含：
 
-- Agent loop：从 user message 到 model stream、tool call、tool result、final answer 的循环。
-- session state：thread id、turn id、message history、model、remote target、capabilities、pending approvals。
-- message history：兼容 DeepSeek thinking/tool-call replay，保留 reasoning content。
-- planner：`update_plan`/checklist 类型的轻量 planning state。
-- tool call dispatcher：只分发到 remote executor，不执行本地系统命令。
-- approval gate：根据风险等级、policy、session approvals 决定是否阻塞等待用户。
-- remote tool schema：手机端向模型暴露 `remote.*` 工具，而不是 `exec_shell/read_file/write_file`。
-- event stream model：response delta、thinking delta、tool start/result、approval required、transport status、resume/reconnect。
-- persistence abstraction：`PersistenceStore` trait，iOS 实现落 SQLite；测试可用 in-memory。
-- model client abstraction：`ModelClient` trait，允许 Rust reqwest 或 Swift URLSession 实现。
-- transport abstraction：`RemoteToolTransport` trait，允许 SSH、runner、MCP HTTP、manual bootstrap。
+- Agent loop 和 turn state。
+- Session state、message history、DeepSeek thinking/tool-call replay 所需 reasoning content。
+- Planner/checklist state。
+- Tool call parser 和 dispatcher。
+- Approval gate、risk classifier 和 target-aware policy。
+- Remote tool schema、capability registry 和 dynamic tool catalog。
+- Event stream model：text delta、reasoning delta、tool start/delta/result、approval request、connection status、error。
+- Persistence abstraction；iOS SQLite 实现可放在 core 外或 feature 后。
+- Model client trait；可用 Rust `reqwest` 实现，也可替换为 Swift `URLSession` bridge。
+- Bootstrap transcript model：生成命令、用户执行状态、粘贴/OCR 输出、下一步建议。
 
-手机端 core 不应包含：
+`mobile-agent-core` 不应包含：
 
 - local shell / `std::process::Command`
-- local file editing / workspace filesystem traversal
+- local file editing / workspace traversal
 - PTY / `portable-pty`
-- TUI / `ratatui` / `crossterm` / raw terminal
-- local LSP server
-- local MCP stdio spawn
+- TUI / `ratatui` / `crossterm`
+- local LSP
+- local MCP stdio server spawn
 - desktop sandbox implementation
-- local git snapshot side-repo
-- local browser automation or screenshots
+- desktop clipboard、keyboard、terminal rendering 或 OS process management
+- phone filesystem 的 git snapshot
 - local Python/RLM REPL
-- `deepseek serve --http` 这类本机 server
 
-建议新增/调整文件：
+## 手机控制电脑模型
 
-- 新增 `crates/mobile-agent-core/Cargo.toml`。
-- 新增 `crates/mobile-agent-core/src/lib.rs`、`engine.rs`、`session.rs`、`events.rs`、`approval.rs`、`model.rs`、`persistence.rs`、`remote_tools.rs`、`transport.rs`。
-- 修改 `crates/protocol/src/lib.rs`：加入 mobile-safe remote event/tool payload，或新建 `crates/remote-protocol` 避免污染现有桌面协议。
-- 修改 `crates/tools/src/lib.rs`：将 `ToolPayload::LocalShell` 的本地语义从 core registry 中剥离，或新增 `ToolPayload::Remote { name, arguments }`。
-- 暂不移动 `crates/tui/src/core/engine.rs`；先从中抽接口和测试用例。
+手机控制电脑应采用“手机规划，电脑执行”的严格分离模型：
 
-## 5. 远程工具接口设计
+```text
+Level 0: Manual bootstrap
+  用户从手机复制一条命令到电脑执行
+  用户把终端输出粘贴或 OCR 回手机
 
-统一字段建议：
+Level 1: Remote shell
+  手机通过 SSH、WinRM 或 PowerShell Remoting 连接电脑
+  低风险诊断可自动运行
+  中高风险命令必须审批
+
+Level 2: Lightweight runner
+  手机安装或引导安装 kai-runner
+  runner 暴露结构化 tools 和 capabilities
+  runner 不运行本地 LLM
+
+Level 3: Enhanced tools
+  runner 暴露 browser automation、installer logs、file operations、
+  remote MCP calls、package repair 和 system diagnostics
+```
+
+原则：
+
+- 手机端永远是 Agent owner。LLM 推理、规划、session history、审批上下文和用户解释都在手机端。
+- 电脑端是 tool target。它只执行明确工具调用，不能自行扩大权限或替用户批准动作。
+- bootstrap 模式是一等能力，不是降级错误路径。
+- runner 是能力增强层，不是大模型宿主。
+- 所有模式共用 tool risk policy、audit log 和 session timeline。
+
+## 执行模式
+
+### 模式 1：Bootstrap 手动引导
+
+适用于电脑无法被远程连接时。
+
+流程：
+
+1. 用户在手机上描述问题。
+2. Agent 创建短诊断计划。
+3. Agent 输出一个安全命令或手动步骤。
+4. 用户在电脑上执行。
+5. 用户粘贴输出或用 OCR 回传文本。
+6. Agent 解析输出并提出下一条命令。
+7. 重复直到 SSH、runner 或目标软件可安装。
+
+产品要求：
+
+- 默认一次只给一条命令。
+- 命令必须标注 OS 和 shell 假设。
+- 危险修复即便在手动模式也要解释并审批。
+- app 把手动命令和输出作为 audit log entry 保存。
+
+### 模式 2：SSH / PowerShell 远程执行
+
+适用于电脑接受远程命令时。
+
+流程：
+
+1. 用户创建或选择电脑连接。
+2. Agent 探测 OS、shell、package manager、网络状态和权限。
+3. Agent 自动运行低风险命令。
+4. Agent 对中高风险命令请求审批。
+5. stdout/stderr 以结构化事件回传。
+6. Agent 根据输出决定下一步。
+
+说明：
+
+- macOS/Linux 首选 SSH。
+- Windows 首选 PowerShell over SSH；WinRM/PowerShell Remoting 可后续加入。
+- 每个 command result 都应包含 command、cwd、exit code、stdout、stderr、duration、truncation metadata 和 idempotency key。
+
+### 模式 3：轻量 runner 增强模式
+
+适用于电脑已稳定到能安装 `kai-runner` 时。
+
+runner 负责：
+
+- 执行 tools。
+- 采集 logs。
+- 按 policy 读写文件。
+- 执行 browser automation。
+- 上报 capabilities。
+- 代理 remote MCP tools。
+- stream structured events。
+
+runner 不负责：
+
+- 运行本地 LLM。
+- 自主决策。
+- 绕过手机端 approval policy。
+
+### 模式 4：复杂软件安装与浏览器辅助
+
+适用于安装需要网页下载、登录控制台、表单、浏览器点击或 installer 页面时。
+
+行为：
+
+- 无 runner：手机给出手动浏览器步骤，要求用户粘贴 visible text、error text、downloaded filename 或 OCR result。
+- 有 runner：手机调用 `remote.browser.*` tools。
+- Browser tools 返回 DOM text、URL、selected element summary、network status、download status；截图只作为可选 evidence，不作为核心控制面。
+- login、submit、upload、payment、deletion、privilege elevation、account change 必须审批。
+
+## 典型用户旅程
+
+以“Homebrew 安装失败”为例：
+
+1. 用户打开 iOS app，输入“帮我检查 Mac 上 Homebrew 为什么安装失败”。
+2. Agent 询问 Mac 是否可通过 SSH 连接；如果不可连接，进入 bootstrap。
+3. Agent 生成第一条低风险诊断命令：`uname -a; sw_vers; command -v brew; xcode-select -p; echo "$PATH"`。
+4. 用户在电脑终端执行并粘贴输出。
+5. Agent 判断是 Xcode Command Line Tools 缺失、PATH 损坏、代理/DNS 问题、权限问题、证书问题或 partial install。
+6. 如 SSH 可用，Agent 连接并执行有边界的诊断。
+7. 如修复需要安装或 sudo，Agent 展示风险摘要并请求审批。
+8. 基础工具恢复后，Agent 引导启用 SSH 或安装 `kai-runner`。
+9. Runner 上报 capabilities 后，Agent 从 shell-only diagnostics 切换到结构化 package/log/browser tools。
+10. session 保存完整 timeline：用户问题、命令、输出摘要、审批决定、修复结论和回滚建议。
+
+## 远程工具接口设计
+
+统一输入字段建议：
 
 ```json
 {
-  "target_id": "macbook-pro",
-  "cwd": "/Users/me/project",
+  "connection_id": "macbook-1",
+  "cwd": "/Users/alice/project",
   "timeout_ms": 60000,
   "idempotency_key": "turn-tool-call-uuid"
 }
 ```
 
-统一输出建议：
+统一输出字段建议：
 
 ```json
 {
   "ok": true,
   "status": "completed",
-  "started_at": "2026-05-22T10:00:00Z",
   "duration_ms": 1234,
   "truncated": false,
   "artifact_ref": null
 }
 ```
 
-| Tool | 输入 schema 摘要 | 输出 schema 摘要 | 风险 | 审批 |
+风险等级：
+
+- Low：只读诊断，预期不暴露凭据、不修改远端。
+- Medium：可能读敏感日志、打开页面、写普通用户配置或产生外部可见行为。
+- High：sudo/admin、删除数据、修改网络/安全设置、修改 shell profile、安装服务、提交表单、上传文件、支付、账号变更。
+- Critical：安装持久化 daemon、改权限、上传密钥、 destructive reset 等。
+
+主要工具：
+
+| Tool | 输入摘要 | 输出摘要 | 风险 | 审批 |
 |---|---|---|---|---|
-| `remote.shell.exec` | `{target_id, command, cwd?, timeout_ms?, env?, stdin?, capture_limit_bytes?, idempotency_key?}` | `{ok,status,exit_code,stdout,stderr,duration_ms,truncated,artifact_ref?}` | High | 默认需要；只读 allowlist 如 `pwd`, `brew doctor`, `git status` 可降为 Medium/Auto |
-| `remote.powershell.exec` | `{target_id, command, cwd?, timeout_ms?, execution_policy?, capture_limit_bytes?, idempotency_key?}` | 同 shell，另含 `{powershell_version?}` | High | 默认需要 |
-| `remote.file.read` | `{target_id, path, start_line?, max_lines?, encoding?, follow_symlinks?}` | `{ok,path,content,total_lines?,shown_range?,truncated,next_start_line?,sha256?}` | Low/Medium | workspace 内只读通常不需要；敏感路径需要审批 |
-| `remote.file.write` | `{target_id, path, content, mode:"overwrite|append|create_new", expected_sha256?, create_dirs?, diff_preview?}` | `{ok,path,bytes_written,old_sha256?,new_sha256,diff?,backup_ref?}` | High | 必须审批 |
-| `remote.diagnose.system` | `{target_id, checks:["os","shell","xcode","brew","network","disk","git"], cwd?}` | `{ok,platform,checks:[{name,ok,summary,detail,raw_ref?}]}` | Medium | 自动或建议审批；不应修改系统 |
-| `remote.package.install` | `{target_id, manager:"brew|apt|winget|npm|pip|cargo", packages:[...], version?, dry_run?, cwd?}` | `{ok,manager,packages,exit_code,stdout,stderr,changed}` | Critical | 必须审批；推荐先 dry run |
-| `remote.browser.open` | `{target_id, url, browser?, profile?, purpose?}` | `{ok,session_id?,url,title?}` | Medium | 外部 URL 建议审批；本地文档可自动 |
-| `remote.browser.extract_text` | `{target_id, url?, session_id?, selector?, max_chars?, wait_ms?}` | `{ok,url,title,text,truncated,links?}` | Low/Medium | 通常自动；登录态/内网域名建议审批 |
-| `remote.browser.click` | `{target_id, session_id, selector?, text?, x?, y?, require_visible?, purpose}` | `{ok,url,title,observed_text?,screenshot_ref?}` | High | 必须审批；避免截图流，截图仅作为 artifact 可选 |
-| `remote.bootstrap.guide` | `{target_id?, os_hint?, desired_transport:"ssh|runner|mcp", user_can_copy_paste:boolean}` | `{ok,steps:[...],commands:[{label,command,risk}], verification_challenge?}` | Medium | 生成安装/诊断命令前建议审批；执行由用户手动完成 |
-| `remote.mcp.call` | `{target_id, server, tool, arguments, timeout_ms?, idempotency_key?}` | `{ok,result,server,tool,duration_ms}` | Dynamic | 读工具可自动；未知/写工具必须审批 |
+| `remote.shell.exec` | `connection_id`、`command`、`cwd?`、`env?`、`stdin?`、`timeout_ms?`、`capture_limit_bytes?`、`idempotency_key?` | `status`、`exit_code`、`stdout`、`stderr`、`duration_ms`、truncation metadata、`runner` | Low 到 High，取决于命令 | 只读 allowlist 可自动；mutating、privileged、destructive、credential-related、network/security-changing 必须审批 |
+| `remote.powershell.exec` | `connection_id`、`script`、`working_directory?`、`execution_policy?`、`timeout_ms?`、`idempotency_key?` | shell 输出字段，另可含 `objects_json` | Low 到 High | registry edits、UAC elevation、service changes、script downloads、execution policy changes 高风险 |
+| `remote.file.read` | `connection_id`、`path`、`start_line?`、`max_lines?`、`encoding?` | `path`、`content`、`total_lines?`、`shown_lines?`、`truncated`、`next_start_line?`、`sha256?` | Low/Medium | 已知日志和用户批准路径可自动；secrets、browser profiles、SSH keys、keychains、private documents 必须审批 |
+| `remote.file.write` | `connection_id`、`path`、`content`、`mode`、`expected_sha256?`、`create_dirs?`、`diff_preview?` | `bytes_written`、`old_sha256?`、`new_sha256`、`diff?`、`backup_ref?` | High | 必须审批，尽量先生成 diff 和 backup/rollback plan |
+| `remote.diagnose.system` | `connection_id`、`checks`、`cwd?` | platform 和 check summaries | Medium | 默认可自动或建议审批；不得修改系统 |
+| `remote.package.install` | `manager`、`packages`、`version?`、`dry_run?`、`cwd?` | `changed`、stdout/stderr、preview | Critical | 必须审批，优先 dry-run/preview |
+| `remote.browser.open` | `url`、`browser?`、`profile?`、`purpose?` | `session_id?`、`url`、`title?` | Medium | 外部 URL 建议审批；本地文档可自动 |
+| `remote.browser.extract_text` | `url?`、`session_id?`、`selector?`、`max_chars?`、`wait_ms?` | `url`、`title`、`text`、`links?`、truncation metadata | Low/Medium | 一般可自动；登录态/内网域名建议审批 |
+| `remote.browser.click` | `session_id`、`selector?`、`text?`、`x?`、`y?`、`purpose` | `url`、`title`、`observed_text?`、`screenshot_ref?` | High | 必须审批 |
+| `remote.bootstrap.guide` | `os_hint?`、`desired_transport`、`user_can_copy_paste` | `steps`、`commands`、`verification_challenge?` | Medium | 生成安装/诊断命令前建议审批；实际执行由用户手动完成 |
+| `remote.mcp.call` | `server`、`tool`、`arguments`、`timeout_ms?`、`idempotency_key?` | `result`、`server`、`tool`、`duration_ms` | Dynamic | 读工具可自动；未知/写工具必须审批 |
 
-风险等级定义：
+`remote.shell.exec` 不能暴露为无限制 bash。手机端 policy 应把命令、cwd、target、风险解释和 LLM 理由一起展示给用户；runner 侧必须二次校验，不能信任手机端。
 
-- Low：只读、范围受限、不会泄露敏感信息或修改远端。
-- Medium：只读但可能访问敏感路径/网络/登录态，或产生外部可见行为。
-- High：执行命令、写文件、点击浏览器、修改系统或项目。
-- Critical：安装软件、删除/重置、上传密钥、改权限、远端持久化 daemon。
-
-`remote.shell.exec` 不应暴露为“无限制 bash”。手机端 policy 应把命令、cwd、target、风险解释、LLM 理由一起展示给用户。runner 侧也必须二次校验，不信任手机端。
-
-## 6. 通信方式建议
+## 通信方式
 
 | 方案 | 适用场景 | 优点 | 缺点 | 建议 |
 |---|---|---|---|---|
-| SSH | 用户已有 Mac/Linux 账号、局域网/VPN/公网可达、MVP 诊断 | 无需预装 runner；概念成熟；可 bootstrap | iOS SSH key 管理复杂；网络可达性差；Windows 支持不稳定；流式/取消/文件传输需要封装 | MVP 支持，作为 bootstrap 和 power-user 模式 |
-| HTTPS/WebSocket runner | 长期主路径；电脑已安装 `kai-runner` 或轻量 daemon | 可做能力发现、审计、流式日志、取消、重连、双向审批、细粒度 sandbox | 需要安装和升级；认证/配对/防火墙复杂 | 推荐作为主架构 |
-| MCP over HTTP/SSE | 用户已有 MCP 生态或 runner 想暴露标准工具 | 标准化 tool/resource/prompt；避免 stdio spawn 在手机端 | MCP auth/approval/能力风险仍需外层策略；很多 MCP server 仍只能本地 stdio | 作为 runner 后面的工具总线，手机端只连 HTTP/SSE MCP |
-| 手动 bootstrap 模式 | 电脑初始不可达、无 SSH、无 runner | 不要求预安装；用户复制命令即可开始 | 不是自动执行；容易复制错误；安全提示必须清晰 | 必须支持，用于首次安装/故障恢复 |
+| SSH | 用户已有 Mac/Linux 账号，局域网/VPN/公网可达，MVP 诊断 | 无需预装 runner；概念成熟；可 bootstrap | iOS SSH key 管理复杂；网络可达性差；Windows 支持不稳定；stream/cancel/file transfer 需要封装 | MVP 支持，作为 bootstrap 和 power-user 模式 |
+| HTTPS/WebSocket runner | 长期主路径，电脑已安装 `kai-runner` | capability discovery、audit、stream log、cancel、reconnect、双向审批、细粒度 sandbox | 需要安装升级；auth/pairing/firewall 复杂 | 推荐主架构 |
+| MCP over HTTP/SSE | 用户已有 MCP 生态或 runner 想暴露标准工具 | 标准化 tool/resource/prompt；手机无需 stdio spawn | MCP auth/approval/risk 仍需外层 policy；很多 MCP server 仍只能本地 stdio | 作为 runner 后面的工具总线 |
+| 手动 bootstrap | 电脑初始不可达、无 SSH、无 runner | 不要求预安装；用户复制命令即可开始 | 不是自动执行；容易复制错误；安全提示必须清晰 | 必须支持 |
 
-推荐顺序：
+推荐顺序：MVP 支持 SSH + manual bootstrap；早期稳定版加入 `kai-runner` HTTPS/WebSocket；扩展生态时让 runner 暴露 MCP over HTTP/SSE。
 
-1. MVP：SSH + manual bootstrap。
-2. 早期稳定版：kai-runner HTTPS/WebSocket，runner 内部可调用本地 shell/file/git/MCP stdio。
-3. 扩展生态：runner 暴露 MCP over HTTP/SSE，iOS core 将 `remote.mcp.call` 当普通 remote tool。
-
-## 7. iOS 集成方式
+## iOS 集成
 
 可选方案：
 
 | 方案 | 优点 | 缺点 | 适配点 |
 |---|---|---|---|
-| Rust `staticlib` + Swift FFI | 最少魔法；可精细控制 ABI；适合稳定小接口 | 手写 C ABI 成本高；复杂类型/async stream 麻烦 | 适合极小 core API，不适合大量事件和 schema |
-| UniFFI | Rust 类型/async/错误导出到 Swift 更自然；减少 FFI 样板 | 需要维护 UDL/生成流程；某些 stream/callback 仍需设计 | 推荐用于 `mobile-agent-core` |
-| Flutter/React Native native module | 跨平台 UI 速度快 | 会多一层 runtime；iOS 原生 Keychain/后台/network 仍需桥接 | 如果产品目标是跨平台，可在 UniFFI 外再包一层 |
+| Rust `staticlib` + Swift FFI | 最少魔法，ABI 可控 | 手写 C ABI 成本高，复杂类型和 async stream 麻烦 | 适合极小 API，不适合大量事件和 schema |
+| UniFFI | Rust 类型、async、error 导出到 Swift 更自然，减少 FFI 样板 | 需要维护 UDL/生成流程；stream/callback 仍需设计 | 推荐用于 `mobile-agent-core` |
+| Flutter/React Native native module | 跨平台 UI 快 | 多一层 runtime；Keychain/后台/network 仍需桥接 | 若产品目标跨平台，可包在 UniFFI 外层 |
 
-推荐方案：
+推荐：`mobile-agent-core` 使用 Rust library + UniFFI。Swift 负责 UI、Keychain、SQLite 路径、网络权限和生命周期；Rust core 负责 deterministic state machine、risk policy、remote tool schema 和 event production。
 
-- `mobile-agent-core` 用 Rust library + UniFFI 导出 Swift API。
-- Swift 负责 UI、Keychain、文件选择器、Local Network 权限说明、Push/BackgroundTask、URLSession 可选 adapter。
-- Rust core 负责 deterministic agent state machine、tool policy、消息和事件 schema。
-- SQLite：优先由 Rust `rusqlite` 使用 app container 路径；如果 iOS 交叉编译或加密需求复杂，则定义 `PersistenceStore` trait，由 Swift/GRDB 或 SQLCipher 实现。
-- Keychain：不要把 API key 写入 Rust 文件 fallback。Swift 从 Keychain 取 token，在创建 `ModelClientConfig`/`TransportConfig` 时注入短生命周期 secret。
-- 网络权限：iOS App 需要明确声明网络访问；局域网 runner 发现可能触发 Local Network permission。后台长任务应设计为可暂停/恢复，而不是假设后台无限运行。
+## 产品能力映射
 
-FFI API 草案：
+| 产品能力 | 当前类似能力 | 可复用模块 | 新增模块 | iOS core | 电脑 runner | MVP |
+|---|---|---|---|---|---|---|
+| 用户意图理解 | 有 | `crates/tui/src/core/engine/turn_loop.rs`、prompts | mobile rescue prompt、故障 taxonomy | 是 | 否 | 是 |
+| 诊断计划生成 | 有 | `tools/plan.rs`、`tools/todo.rs` | rescue-specific playbooks | 是 | 否 | 是 |
+| Bootstrap 手动引导 | 只有对话能力 | session/message/planning | `BootstrapSession`、manual command guide、OCR/text ingest | 是 | 否 | 是 |
+| SSH 远程执行 | 无，本地 shell | `execpolicy`、shell result schema | `SshTransport`、remote shell schema、stream reconnect | 调度/审批 | 执行 | 是 |
+| PowerShell 远程执行 | 无 | `execpolicy` 思路 | `PowerShellTransport`、Windows risk classifier | 调度/审批 | 执行 | 是 |
+| 远程文件读取 | 本地 file tools | `tools/file.rs` 分页思想 | `remote.file.read`、sensitive path policy | 调度/审批 | 读取 | 是 |
+| 系统诊断 | 有本地 diagnostics | `tools/diagnostics.rs` | `remote.diagnose.system` per OS checks | 规划/解释 | 探测 | 是 |
+| 包管理器修复 | 可通过本地 shell | shell、approval、task gate | brew/winget/apt/npm repair playbooks | 规划/审批 | 执行 | 是 |
+| 浏览器自动化 | 有 web/fetch，非桌面浏览器 | `web_run.rs`、`fetch_url.rs` | `remote.browser.*`、manual browser guide | 规划/审批 | 控制浏览器 | Should |
+| runner 安装升级 | 无专门能力 | CLI/install docs、runtime API | installer flow、pairing、self-update | 引导/审批 | 安装/升级 | 是 |
+| capability discovery | 部分有 | `runtime_api.rs`、`mcp.rs`、`ToolRegistryBuilder` | runner capability schema | 是 | 上报 | 是 |
+| 工具风险评估 | shell prefix approval | `crates/execpolicy`、`approval_cache.rs` | target-aware risk classifier | 是 | 二次校验 | 是 |
+| 用户审批 | 有 TUI approval/runtime endpoint | `core/engine/approval.rs`、`runtime_api.rs` | Swift approval sheet、remote approval payload | 是 | enforcement mirror | 是 |
+| 审计日志 | 有 tool audit/log/runtime events | `runtime_log.rs`、`audit.rs`、`runtime_threads.rs` | mobile audit timeline、runner signed log | 是 | 是 | 是 |
+| 会话恢复 | 有 | `crates/state`、`runtime_threads.rs`、`session_manager.rs` | mobile persistence、transport reconnect replay | 是 | runner job replay | 是 |
 
-```text
-MobileAgentCore.create(config) -> CoreHandle
-CoreHandle.start_thread(params) -> ThreadId
-CoreHandle.send_user_message(thread_id, text) -> AsyncEventStream
-CoreHandle.submit_approval(approval_id, decision)
-CoreHandle.configure_target(target_config)
-CoreHandle.resume_pending_turn(thread_id)
-CoreHandle.export_thread(thread_id) -> JSON
-```
+MVP 底线：用户意图理解、诊断计划、bootstrap、SSH/PowerShell、基础文件/日志读取、系统诊断、包管理器修复、风险评估、审批、审计、会话恢复和 runner 安装引导。
 
-## 8. MVP 改造计划
+## 场景覆盖
 
-2-4 周 MVP，目标是验证手机端 Agent core 能控制远端 Mac 做 Homebrew 诊断。
+| 场景 | 可复用点 | 缺口 | 承载位置 | MVP |
+|---|---|---|---|---|
+| macOS Homebrew 安装失败 | shell tool、diagnostics、approval、planning | bootstrap/OCR、SSH transport、brew 诊断模板 | iOS core 规划 + runner/SSH 执行 | 必须 |
+| Xcode Command Line Tools 缺失 | shell 执行和错误解释 | `xcode-select --install` 是 GUI/系统动作，需要手动步骤和审批 | iOS guide + runner 诊断 | 必须 |
+| macOS 证书/代理/DNS/权限异常 | network policy、fetch/web、shell diagnostics | 系统网络配置、Keychain/证书说明、代理环境差异 | runner system diagnose + iOS 解释 | 必须 |
+| Windows Python/Node/VS Code 安装失败 | planning/approval/session | PowerShell/winget/MSI logs/Event Log/UAC 适配 | runner PowerShell adapter | 必须 |
+| Windows winget/PowerShell/PATH/UAC 异常 | exec policy 思路 | Windows 命令风险模型和权限升级流程 | runner + iOS approval | 必须 |
+| 用户不会看命令行 | LLM conversation、message history | OCR/text ingest、错误文本结构化解析 | iOS core | 必须 |
+| 电脑无法联网 | planning | offline remediation templates、手机下载/传输策略、hash 校验 | iOS core + manual guide | Should |
+| 引导安装 runner | runtime API/MCP/tool registry | pairing、installer、capability discovery、安全模型 | iOS core + runner | 必须 |
 
-### Phase 1：抽象 tool executor
+总体判断：`DeepSeek TUI` 对“已有本地执行能力后的 Agent 行为”覆盖较好；对“电脑一开始不可用、只能手动救援”的最低保底能力覆盖不足，需要新增 bootstrap-first 产品层。
 
-范围：
+## 当前实现状态
 
-- 在 `crates/tui/src/core/engine/tool_execution.rs` 和 `crates/tui/src/tools/registry.rs` 周围抽出 `ToolExecutor` / `ToolCatalog` / `ToolPolicy` trait。
-- 将本地工具执行从 Agent loop 中隔离，避免 loop 直接知道 shell/file/MCP stdio。
-- 在 `crates/protocol` 或新 crate 中定义 mobile-safe `ToolCallRequest`、`ToolCallResult`、`ToolRisk`。
+这部分来自英文分支的新增内容，描述当前 scaffold 与真实平台验证之间的边界。
 
-需要改的文件：
+- `crates/mobile-agent-core` 已有 session、persistence、agent loop、model trait、transport trait、approval/risk、event、bootstrap、audit、remote schema、UniFFI UDL 等 scaffold。
+- `crates/kai-runner` 已有 pairing API、capabilities endpoint、bearer auth、本地 HTTP smoke、runner-to-mobile core smoke、file read/write、diagnose scaffold、browser adapter seam、PowerShell request shape、maintenance dry-run/audit。
+- iOS demo 已有 SwiftUI session list、chat/event rendering、command cards、approval sheet、connection setup、Keychain/SQLite adapter scaffold、background/resume UI model 和 UniFFI handoff scripts。
+- Shell/PowerShell 执行只应在显式 approval nonce 和 policy 检查后开放；默认 runner 仍应阻止 raw shell execution。
+- Maintenance execution、package install execution 和真实 browser engine 仍未启用；browser extraction 需要真实 `BrowserEngine`。
+- Linux 可以测试 Rust API、fake transport、runner HTTP handler、auth、pairing 和 scaffold；不能证明 SwiftUI、Keychain、SQLite sandbox、Xcode package resolution、simulator launch、signing、local network permission 或真机行为。
 
-- `crates/tui/src/core/engine/tool_execution.rs`
-- `crates/tui/src/core/engine/turn_loop.rs`
-- `crates/tui/src/tools/spec.rs`
-- `crates/tui/src/tools/registry.rs`
-- `crates/protocol/src/lib.rs` 或新 `crates/remote-protocol`
+## MVP 改造计划
 
-验收：
+### Phase 1：抽象 tool execution
 
-- 桌面现有 TUI 行为不变。
-- 测试中可用 fake executor 接管一个 tool call。
+目标：从 `crates/tui` 中明确分离“Agent 想调用工具”和“本机如何执行工具”。
 
-### Phase 2：禁用本地 shell/file/LSP/TUI，替换为 remote tool
+工作项：
 
-范围：
+- 定义 `ToolExecutor` trait，输入 tool name/arguments/session context，输出 stream/event/result。
+- 定义 `ToolRiskPolicy`，从 shell prefix 扩展到 remote action class。
+- 定义 `EventSink`，让 TUI、runtime API、mobile core 可以消费同一类 tool/model/approval 事件。
+- 保持 `crates/tui` 行为不变，只先引入 boundary。
+- 为现有 shell/file/git tools 加 adapter，而不是直接改语义。
 
-- 增加 remote tool catalog，只向模型暴露 `remote.*`。
-- 手机模式下不注册 `with_shell_tools()`、`with_file_tools()`、`with_patch_tools()`、`with_git_tools()`、`with_mcp_tools()`、LSP hooks、snapshot。
-- 把本地 `exec_shell/read_file/write_file` prompt guidance 改为 remote 语义。
+### Phase 2：Mobile mode 用 remote tools 替换 local tools
 
-需要改的文件：
+目标：手机 core 不链接本地 shell/file/LSP/TUI。
 
-- `crates/tui/src/tools/registry.rs`
-- `crates/tui/src/prompts/agent.txt`
-- `crates/tui/src/prompts/base*.md/txt`
-- `crates/tui/src/core/engine/lsp_hooks.rs`
-- `crates/tui/src/core/engine.rs`
+工作项：
 
-验收：
+- 定义 `remote.*` tool catalog。
+- 将 `exec_shell`、`read_file`、`write_file`、`apply_patch`、`git`、`lsp` 映射为 runner-side tools。
+- 手机端 model prompt 只暴露 `remote.*` tools。
+- 本地工具实现留在 runner 或 desktop runtime。
+- 对每个 remote tool 加 risk metadata 和 approval payload。
 
-- mobile profile 下 tool catalog 不包含本地执行工具。
-- 所有 tool call 经过 `RemoteToolTransport` fake。
+### Phase 3：实现 `mobile-agent-core`
 
-### Phase 3：实现 `mobile-agent-core` crate
+当前：scaffold 已存在，产品 wiring 未完成。
 
-范围：
+应继续完成：
 
-- 新 crate：`crates/mobile-agent-core`。
-- 搬入/重写最小 engine：session、message history、model stream、tool dispatcher、approval gate、event stream。
-- 依赖尽量限于 `serde`、`serde_json`、`tokio` 可选、`uuid`、`chrono`、`deepseek-protocol`、`deepseek-execpolicy`。
-- 不依赖 `ratatui`、`crossterm`、`portable-pty`、`std::process`、`axum` server、LSP、sandbox。
+- 将 fake model/fake transport 的 bootstrap loop 扩展为真实 model client。
+- 补齐 session replay、reasoning replay、pending approval resume。
+- 将 SQLite 持久化落到 iOS sandbox。
+- 将 `uniffi_api.udl` 生成 Swift bindings 并替换 mock bridge。
+- 保持 core 无 TUI、无 shell、无 process spawn。
 
-需要改的文件：
+### Phase 4：iOS demo shell
 
-- workspace `Cargo.toml`
-- 新增 `crates/mobile-agent-core/*`
-- 可能新增 `crates/remote-protocol/*`
+当前：Mock SwiftUI scaffold 已存在，Xcode/模拟器/真机验证未完成。
 
-验收：
+应继续完成：
 
-- macOS host 上可跑 core unit tests。
-- fake model + fake transport 能完整执行 user -> tool approval -> remote result -> final response。
-
-### Phase 4：做 iOS demo shell
-
-范围：
-
-- SwiftUI demo：会话输入、事件流、审批 sheet、远程目标配置。
-- UniFFI 绑定 core。
-- Keychain 存 API key/SSH key 或 runner token。
-- 本地 SQLite 或 in-memory persistence。
-
-验收：
-
-- iOS simulator 或真机可输入 prompt，看到 model stream 和 pending approval。
-- fake transport 可演示全流程。
+- 在 macOS 上运行 `ios/DeepSeekMobileDemo/Scripts/verify-macos`。
+- 打开 `ios/DeepSeekMobileDemo/Package.swift`，跑 Swift package tests 和 simulator build。
+- 验证 session list、chat、command card、connection setup、approval sheet、bootstrap paste、maintenance approval、browser approval、audit timeline。
+- 把 mock-only session/audit 数据逐步替换为 `mobile-agent-core` 真实 Rust bridge。
 
 ### Phase 5：接入 `kai-runner` / remote MCP
 
-范围：
+当前：runner scaffold 完成较多，真实部署和平台 hardening 未完成。
 
-- runner 提供 HTTPS/WebSocket API：pairing、capabilities、tool call、cancel、log stream。
-- runner 内部复用桌面工具实现：shell/file/git/MCP stdio/LSP。
-- iOS core 增加 runner transport；后续支持 MCP over HTTP/SSE。
+应继续完成：
 
-验收：
+- 明确 `kai-runner` binary/service entrypoint。
+- 绑定明确 local address，暴露 `/health`、`/pairing/code`、`/pairing/redeem`、`/capabilities`、`/approval/nonce`、`/tool-call`。
+- 手机 demo 通过 `RunnerHttpTransport` 或未来 WebSocket transport 连接 live runner。
+- 在 nonce binding、command policy、output redaction、timeout/cancel、sudo/UAC 行为和 OS sandbox 证明前，不开放任意 shell。
 
-- 真机通过 runner 对 Mac 执行 `remote.diagnose.system` 和 `remote.shell.exec("brew doctor")`。
-- 高风险命令必须弹审批。
+## 后续阶段建议
 
-## 9. 风险清单
+1. 先执行 `docs/mobile-validation-checklists.md` 中真实平台验证清单，再改变平台支持声明。使用 `docs/mobile-evidence-bundles/templates/` 的空骨架，或在 Linux 上 dry-run `scripts/mobile_evidence_bundle.py --list` 与 `scripts/mobile_evidence_bundle.py --platform <platform> --dry-run`。
+2. 在真实 macOS 上证明 Xcode toolchain 路径：Swift package tests、Xcode 打开 package、simulator 启动，并记录缺失的 project/signing/binding 工作。
+3. 从 `crates/mobile-agent-core/src/uniffi_api.udl` 生成并链接真实 UniFFI bridge，逐个替换 Swift demo 的 mock surface。
+4. 增加真实 `kai-runner` binary/service entrypoint，包括 bind address、TLS 或 local-network pairing posture、token storage、logs、lifecycle commands 和 version reporting。
+5. 在一次性 Mac 和 Windows VM 上验证 runner install/upgrade，失败也作为一等 audit outcome。
+6. 扩展 remote shell 前先加固：allowed cwd roots、command lease metadata、nonce 与 command hash/session/tool/cwd/idempotency 绑定、output redaction、timeout/cancel、sudo/UAC 行为、macOS/Linux/Windows sandbox 期望。
+7. 选择第一个真实 browser engine 放到 `BrowserEngine` 后面，`remote.browser.click` 继续保持 approval-bound。
+8. Maintenance 从 dry-run plan 变成 staged executor 前，必须证明 binary signing、rollback、idempotency 和 local approval UX。
+9. 提前准备 App Store 风险评审：local network、remote control 表述、credential storage、browser automation、background limits、privacy labels 和 reviewer demo credentials。
 
-- iOS 后台限制：App 进入后台后网络和 CPU 时间有限。长 turn 必须可暂停、恢复、重连；runner 侧应持久化 tool job。
-- 网络断开与恢复：tool call 需要 idempotency key；event stream 需要 sequence/replay；SSH 断线要能重新 attach 或报告 job unknown。
-- tool 调用幂等性：写文件、安装包、点击浏览器都不是天然幂等。每个 request 带 `idempotency_key`，runner 记录已执行结果。
-- 高风险命令审批：手机端和 runner 侧都要校验。不能只信任 LLM 的风险解释。
-- LLM 幻觉命令：policy 需要识别 `rm -rf`、`sudo`、`curl | sh`、权限修改、密钥读取、上传等模式，并要求明确用户确认。
-- 用户电脑初始不可达：提供 manual bootstrap guide；不要把“无法连接”当作 Agent 失败。
-- runner 安装失败：bootstrap 需要诊断路径：shell 类型、PATH、权限、Homebrew/Xcode、网络、杀软/防火墙。
-- App Store 审核风险：App 不能表现为绕过 iOS sandbox 在手机本机执行代码；文案和实现应明确远端用户自有电脑执行。避免下载执行任意移动端代码。
-- 密钥与凭据存储：API key、SSH private key、runner pairing token 必须在 Keychain；日志和 tool output 要做 secret redaction。
-- 远程 runner 暴露面：runner 必须默认 bind localhost 或配对认证；局域网访问必须 TLS/token；防重放。
-- MCP 信任边界：远端 MCP server 是任意代码。手机端展示 server/tool 名称、参数、风险；runner 做 allowlist。
-- 隐私和日志：Homebrew/git/system diagnostics 可能含用户名、路径、内网 host、token。手机端展示前应截断和标注敏感。
-- 成本和上下文膨胀：远程命令输出需要 artifact/ref + summary，避免把完整日志塞进手机会话。
-- 平台差异：Mac/Linux/Windows shell、PowerShell、路径和权限不同；remote schema 要显式 `platform`。
+## 验证与证据阶段
 
-## 10. 最小技术验证 Spike
+真实平台验证被拆成 S/T/U/V/W 阶段，避免把 Linux scaffold 误说成 macOS/iOS/Windows 已通过。
 
-目标场景：
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| S5 | done | `docs/mobile-validation-checklists.md` 已拆出 macOS、Windows、iOS simulator、iOS device、LAN runner 验证清单，包含前置条件、命令/动作、预期结果和失败证据。 |
+| S6-S12 | open | 真实 Mac/Xcode、iOS simulator/device、LAN runner、Windows、UniFFI link、真实 browser engine 仍需硬件或真实环境验证。 |
+| T5 | done | 已加入 fillable evidence log templates，要求记录日期、设备、OS/runtime、commit/worktree、命令、结果、日志、截图、blockers 和 next steps。 |
+| T6-T10 | open | 真实 macOS/iOS/LAN runner/Windows evidence run 尚未完成，完成后要回填本计划并转成任务。 |
+| U5 | done | 已加入 result summary table 和 plan-backfill 规则。 |
+| U6-U10 | open | 需要把完成的 evidence summary 回填到相关 S/T/U milestone 和实现任务。 |
+| V5 | done | 已加入 `docs/mobile-evidence-bundles/` 模板、README 和 `scripts/mobile_evidence_bundle.py` dry-run/list flow。 |
+| V6-V10 | open | 需要生成真实 macOS、iOS、LAN runner、Windows evidence bundle，并将 blocker 转成 implementation tasks。 |
+| W1-W3 | done | Linux LAN runner evidence harness、plan draft parser、Linux validation entrypoint 已可支持本地证据工作流。 |
+| W4 | open | 真实 macOS/iOS/Windows 证据仍依赖硬件和真实平台执行。 |
+| W5 | done/limited | Linux mobile Web SSH simulator 可做 LAN/Web UI 形态验证，但不能关闭真实 iOS、macOS、Windows 或真实 runner 证据项。 |
 
-用户在 iOS demo 输入：“帮我检查 Mac 上 Homebrew 为什么安装失败”。
-
-最小流程：
+## 任务树
 
 ```text
-1. iOS App -> mobile-agent-core
-   用户输入 prompt，core 创建 turn。
-
-2. core -> model client
-   模型生成诊断计划：
-   - 确认连接方式
-   - 检查 brew doctor
-   - 检查 xcode-select
-   - 检查网络/DNS
-   - 检查 PATH 和权限
-
-3. core -> iOS App
-   事件：需要选择 target transport。
-   用户选择：
-   - SSH：填 host/user/key
-   - bootstrap：复制一段只读诊断命令到 Mac
-
-4. core -> approval gate
-   `remote.shell.exec` 请求：
-   command = "brew doctor && xcode-select -p && brew config"
-   cwd = "$HOME"
-   risk = Medium
-   reason = "只读诊断 Homebrew/Xcode 配置"
-   用户批准。
-
-5. core -> remote transport
-   SSH 或 runner 执行：
-   - `brew doctor`
-   - `xcode-select -p`
-   - `xcodebuild -version` 或 `clang --version`
-   - `brew config`
-   - `brew update --verbose` 仅在用户批准后执行，因为可能联网且耗时
-   - `curl -I https://formulae.brew.sh` 或 DNS 检查
-
-6. target computer -> core
-   返回 stdout/stderr、exit code、duration、truncated/artifact_ref。
-
-7. core -> model client
-   把结构化结果作为 tool result 回传，模型解释问题。
-
-8. core -> iOS App
-   展示结论和下一步。
-   如果模型建议修复命令，如：
-   - `xcode-select --install`
-   - `brew update-reset`
-   - `sudo chown -R ...`
-   - `rm -rf "$(brew --cache)"`
-   必须再次生成 High/Critical approval。
+Mobile Porting Program
+├─ A. Architecture split
+│  ├─ [done] A1. 清点当前 runtime dependencies
+│  ├─ [done] A2. 冻结 phone-core non-goals：无 shell、PTY、TUI、LSP、MCP stdio
+│  ├─ [done] A3. 定义 mobile-agent-core public API
+│  ├─ [done] A4. 定义 remote tool protocol 和 event protocol
+│  └─ [done] A5. 添加 cargo workspace member，默认不改变 app 行为
+│
+├─ B. Mobile agent core
+│  ├─ [done] B1. Session model
+│  ├─ [done] B2. Message/session snapshots
+│  ├─ [done] B3. 带 max-step guard 的 turn loop
+│  ├─ [done] B4. Model client trait 和 fake model
+│  ├─ [done] B5. Tool dispatcher trait 和 fake/runner transports
+│  ├─ [done] B6. Approval gate 和 risk classifier
+│  ├─ [done] B7. Event stream
+│  ├─ [done] B8. Persistence abstraction 和 SQLite scaffold
+│  └─ [partial] B9. UniFFI binding surface 已存在；Swift demo 尚未链接生成 bindings
+│
+├─ C. Bootstrap mode
+│  ├─ [done] C1. Bootstrap tool schema
+│  ├─ [done] C2. Command card generation
+│  ├─ [done] C3. User output ingestion
+│  ├─ [partial] C4. Paste normalization scaffold；真实 OCR 是 iOS 后续工作
+│  ├─ [done] C5. Manual audit log
+│  ├─ [done] C6. Homebrew/Xcode CLT diagnostic playbook prompt
+│  ├─ [done] C7. macOS runner install/bootstrap fallback guidance
+│  └─ [done] C8. Windows runner rescue guidance
+│
+├─ D. Remote execution
+│  ├─ [partial] D1. SSH connection config 已存在；生产 credential storage 是 iOS/Keychain 工作
+│  ├─ [partial] D2. `remote.shell.exec` schema 和 fake/runner path 已存在；live runner execution 仍 gated/incomplete
+│  ├─ [partial] D3. Output event shapes 已存在；真实 network streaming 未完成
+│  ├─ [partial] D4. Timeout fields 和 runner helpers 已存在；cancel 语义需真实 transport 验证
+│  ├─ [partial] D5. Maintenance planning 已有 idempotency keys；更广泛 mutating tools 仍需绑定
+│  ├─ [partial] D6. PowerShell schema/runner support 已存在；真实 Windows host smoke 未完成
+│  └─ [done] D7. Windows diagnostics/bootstrap playbook scaffold
+│
+├─ E. Runner
+│  ├─ [partial] E1. `kai-runner` crate 和 pairing API 已存在；standalone install/service path 未完成
+│  ├─ [done] E2. capabilities endpoint 和 report schema
+│  ├─ [partial] E3. shell/powershell tool 只在 explicit approval nonce policy 后可用
+│  ├─ [done] E4. file read/write 有 workspace confinement 和 backups
+│  ├─ [done] E5. diagnose system scaffold
+│  ├─ [partial] E6. package install 仅 dry-run/preview；execution disabled
+│  ├─ [partial] E7. browser session/approval scaffold only；无真实 browser engine
+│  ├─ [partial] E8. remote MCP proxy shape 已存在；hardening 和真实 servers 未完成
+│  └─ [partial] E9. self-update/uninstall plans/audit 已存在；execution disabled
+│
+├─ F. iOS app
+│  ├─ [done] F1. SwiftUI session list scaffold
+│  ├─ [done] F2. Chat 和 event rendering scaffold
+│  ├─ [done] F3. Command cards
+│  ├─ [done] F4. Approval sheet 展示 shell/browser nonce
+│  ├─ [done] F5. Connection setup 支持 bootstrap、SSH、runner、remote MCP
+│  ├─ [partial] F6. Keychain adapter scaffold；真实设备验证未完成
+│  ├─ [partial] F7. SQLite persistence adapter scaffold；iOS sandbox 验证未完成
+│  ├─ [partial] F8. Background/resume UI model 已存在；真实 lifecycle 验证未完成
+│  └─ [open] F9. Internal testing build/TestFlight build
+│
+├─ G. Verification
+│  ├─ [done] G1. Fake model deterministic tests
+│  ├─ [done] G2. Fake transport approval tests
+│  ├─ [partial] G3. Manual bootstrap Homebrew test scaffold；真实 Mac execution 未完成
+│  ├─ [partial] G4. SSH Mac Homebrew test scaffold；真实 Mac execution 未完成
+│  ├─ [partial] G5. Windows PowerShell smoke scaffold；真实 Windows host 未完成
+│  ├─ [done] G6. Runner capability/auth/pairing tests
+│  ├─ [done] G7. Audit log 和 session recovery tests
+│  ├─ [done] G8. Runner maintenance dry-run/audit tests
+│  ├─ [done] G9. Browser session/approval scaffold tests
+│  └─ [open] G10. macOS Xcode/Swift/iOS simulator verification
+│
+└─ Platform validation
+   ├─ [done] P1-P3. Runner live pairing、mobile-core-to-live-runner smoke、maintenance approval E2E
+   ├─ [partial] P4. Maintenance execution 仍是 dry-run；signed artifacts 和 staged executor 未完成
+   ├─ [done] Q1/Q3/Q5/Q7. Browser seam、shell nonce policy、PowerShell scaffold、iOS UniFFI handoff scripts
+   ├─ [partial] Q2/Q4/Q6. 真实 browser engine、production OS sandbox、真实 Windows host smoke 未完成
+   ├─ [done] S1-S5/T1-T5/U1-U5/V1-V5/W1-W3. 文档、证据模板、parser 和 Linux tooling 已完成
+   └─ [open] S6-S12/T6-T10/U6-U10/V6-V10/W4. 真实 macOS/iOS/LAN runner/Windows 证据和 blocker 回填未完成
 ```
 
-Spike 需要实现的最小技术面：
+## 手机可运行里程碑
 
-- `mobile-agent-core` fake/real model client 二选一；若时间紧，先 fake model 固定生成 tool call。
-- `RemoteToolTransport` 的 SSH 实现或 fake runner 实现。
-- `remote.shell.exec` schema、risk policy、approval UI。
-- event stream：`response.delta`、`tool.started`、`approval.required`、`tool.output.delta/result`、`turn.completed`。
-- iOS SwiftUI demo：输入、事件列表、审批按钮、SSH/bootstrap 选择。
+| 里程碑 | 手机上运行什么 | 人工可验证什么 | 范围 |
+|---|---|---|---|
+| M0: Rust core linked | Rust `uniffi_api` scaffold 已存在，尚未真正在手机上证明 | Linux 可测 Rust API；Xcode binding link 未完成 | Core API、fake model、generated Swift bindings |
+| M1: Bootstrap command cards | Mock Swift UI 和 Rust bootstrap steps 已存在 | Linux 可测命令生成；真实 Mac paste flow 未完成 | Bootstrap mode、fake/real model |
+| M2: Real cloud model | Rust model client scaffolds/tests 已存在 | Linux 可测 transport shape；phone streaming 未完成 | Model client、event stream、iOS network integration |
+| M3: Session resume | Rust/Swift persistence scaffolds 已存在 | Linux 可测 Rust persistence；iOS kill/reopen 未完成 | SQLite persistence、iOS lifecycle |
+| M4: SSH diagnostics | Rust SSH mapping/fake transport 已存在 | 真实 Mac SSH execution 未完成 | SSH transport、approval gate、credential storage |
+| M5: Approved repair | Rust/iOS approval scaffolds 已存在 | Mock nonce UX 可 review；真实高风险执行仍 blocked/open | Risk classifier、approval UI、nonce binding |
+| M6: Runner mode | Runner HTTP/auth/pairing/capability scaffold 已存在 | Linux 可测 API；phone-to-live-runner 未完成 | Runner transport、capabilities、service lifecycle |
+| M7: Browser assist | Browser schema/session/click approval scaffold 已存在 | Fake engine 可测 adapter/click approval；无真实 browser | Browser tool schema、runner `BrowserEngine`、audit policy |
+| M8: Runner maintenance | Dry-run plan/audit scaffold 已存在 | Linux 可测 self-update/uninstall plan 和 nonce audit；execution disabled | Signed artifacts、rollback、staged executor |
+| M9: Runner pairing live smoke | Local HTTP runner pairing 和 bearer auth 已有测试 | Linux 可测 local socket pairing、capabilities、auth rejection、diagnose；LAN phone-to-runner 未完成 | Pairing manager、bearer routes、capabilities、diagnose |
+| M10: Maintenance approval E2E | Mobile approval metadata 可塑形为 runner maintenance plan request | Linux 可测 nonce、denial、replay rejection、redacted audit；真实 update/uninstall disabled | Approval request、nonce manager、maintenance dry-run、audit redaction |
+| M11: Browser adapter | Runner 通过 `BrowserEngine` 和 session registry 接受 browser open/extract/click shape | Fake engine 可测；未驱动真实 browser | `BrowserEngine`、session registry、approval-bound click |
+| M12: Shell and PowerShell policy | Shell/PowerShell routes 只在 explicit approval nonce scaffold 后存在 | Linux 可测 blocked default 和 request shape；真实 Windows/production sandbox 未完成 | `ShellEnabledKaiRunner<E>`、nonce policy、PowerShell schema |
+| M13: iOS UniFFI handoff | macOS scripts 和 Swift package layout 记录 generated binding/artifact path | script syntax 和 plan checks 可 review；真实 generation/link/simulator/device 未完成 | `generate-uniffi-macos`、`verify-macos`、Swift bindings、static library/XCFramework |
+| M14: UniFFI and pairing bridge scaffold | Rust UDL 和 iOS pairing-upgrade bridge 已存在 | Linux 可测 UDL/API alignment 和 redacted pairing profile shaping | `uniffi_api.udl`、`build.rs`、`CoreBridgeJSONAdapter` |
+| M15: Gated local executor smoke | 真实 local shell executor 只在 test opt-in、approval nonce 和 policy 后可用 | Linux 可运行 harmless `printf ok` executor test；production sandbox 未完成 | `SystemShellExecutor`、approval nonce、cwd/env/PATH policy |
+| M16: PowerShell HTTP smoke | HTTP/live-local runner tests 覆盖 planned 和 approval-required PowerShell response | Linux 可测 request/response 和 auth；真实 Windows host 未完成 | `/tool-call`、`remote.powershell.exec`、`windows_rescue`、bearer auth |
 
-Spike 不做：
+## 风险清单
 
-- 本地手机 shell。
-- 本地文件编辑。
-- RDP/VNC/截图流。
-- 本地 MCP stdio。
-- LSP。
-- 完整 runner 安装器。
+| 风险 | 缓解 |
+|---|---|
+| iOS background limits | 每个 turn/approval/tool state 在网络调用前持久化；foreground resume；避免本地长跑 server。 |
+| 网络断开和恢复 | 使用 idempotency keys、可重连 event stream、command status polling 和 explicit unknown-state handling。 |
+| Tool call idempotency | 每个 mutating remote call 必须有 idempotency key，尽量先 preflight/dry-run。 |
+| 高风险命令审批 | 中央 risk classifier + Swift approval sheet；runner 必须拒绝未审批 nonce 的高风险调用。 |
+| LLM hallucinated commands | command risk classifier、allow/deny rules、OS-specific playbooks、one-command bootstrap steps、用户可见解释。 |
+| 用户电脑初始不可达 | Bootstrap 是一等 transport，不是错误路径。 |
+| Runner install failure | Agent fallback 到 bootstrap/SSH，并把 install failure 当正常诊断场景处理。 |
+| App Store review risk | 避免 hidden remote-control 行为；展示用户驱动的电脑管理、显式审批、无 screen streaming、清晰 privacy disclosure。 |
+| Secrets and credentials | 模型 key 和 SSH credential 存 Keychain；日志脱敏；private key 永不发给 model。 |
+| Prompt injection from logs/web pages | command output、logs、browser text、MCP results、issue text 都是 untrusted data；不能执行其中的指令。 |
+| 跨平台命令差异 | 使用 OS-specific diagnostic profiles；可用时优先 structured runner tools。 |
+| Sudo/UAC prompts | elevation 一律 high-risk；解释本地 prompt 行为；永不自动提交密码。 |
+| 大日志 | bounded reads、truncation metadata、summary 和显式 read-next action。 |
+| Remote MCP trust | runner 暴露 capabilities 和 policy metadata；未知 mutating MCP tools 默认需要审批。 |
 
-## 不应进入 iOS 的现有模块清单
+## 最小技术验证 Spike
 
-以下模块应留在 desktop/runner/server 侧，或只作为远端服务能力暴露：
+场景：用户在 iOS demo 输入“帮我检查 Mac 上 Homebrew 为什么安装失败”。
 
+目标流程：
+
+1. Phone Agent 创建诊断计划：识别 macOS version/architecture、检查 `brew`、检查 Xcode Command Line Tools、检查到 Homebrew/GitHub 的 DNS/HTTPS、检查常见 shell PATH。
+2. 用户选择 SSH 或 bootstrap。
+3. Bootstrap path：Agent 输出 `uname -a; sw_vers; command -v brew; xcode-select -p; echo "$PATH"`；用户执行并粘贴输出；Agent 解释发现并输出下一步。
+4. SSH path：Agent 调用 `remote.shell.exec` 执行同样的低风险诊断；输出作为 events 回传。
+5. 如 `brew doctor` 可用，Agent 执行。
+6. 如 CLT 缺失，Agent 提议 `xcode-select --install` 并请求审批。
+7. 如 PATH 损坏，Agent 提议 `.zprofile` 或 `.zshrc` 修改，请求审批并提供 backup/rollback plan。
+8. 最终用用户语言解释根因和下一步。
+
+成功标准：
+
+- 手机 app 可对真实 Mac 完成 bootstrap 和 SSH 两条路径。
+- app 从不尝试执行手机本地 shell。
+- 每组 command/output 都在 audit history 可见。
+- 高风险命令停在 approval。
+- app 重启后 session 可恢复。
+
+## 不应进入 iOS 的模块
+
+不要把以下模块链接进 `mobile-agent-core`：
+
+- `crates/tui/src/tui/*`
 - `crates/tui/src/tools/shell.rs`
 - `crates/tui/src/tools/file.rs`
 - `crates/tui/src/tools/apply_patch.rs`
 - `crates/tui/src/tools/git.rs`
-- `crates/tui/src/tools/diagnostics.rs`
-- `crates/tui/src/tools/test_runner.rs`
 - `crates/tui/src/lsp/*`
-- `crates/tui/src/mcp.rs` 的 stdio spawn 部分
+- `crates/tui/src/sandbox/*`
 - `crates/tui/src/mcp_server.rs`
-- `crates/tui/src/runtime_api.rs` 的 local server
-- `crates/tui/src/tui/*`
+- `crates/tui/src/mcp.rs` 中 local MCP stdio spawn 部分
 - `crates/tui/src/repl/*`
 - `crates/tui/src/rlm/*`
-- `crates/tui/src/sandbox/*`
-- `crates/tui/src/snapshot/*`
 - `crates/tui/src/tools/subagent/*` 的完整递归 agent runtime，MVP 暂缓
+- `crates/tui/src/snapshot/*`
+- `crates/cli` dispatcher code
 
-## 推荐替代方案
+这些模块可以作为 runner-side reference，或在明确 hardening 后移动到 desktop runner binary。
 
-如果目标是快速拥有手机端 Agent Core，不建议从 `crates/tui` 做“减法式移植”。更稳的方案是：
+## 具体文件和模块改造图
 
-1. 以 `crates/protocol`、`crates/execpolicy`、`crates/tools` 的抽象为基础，新建 `mobile-agent-core`。
-2. 从 `crates/tui/src/core/engine/turn_loop.rs` 复制行为级测试和协议需求，而不是复制实现文件。
-3. 把 `crates/tui` 继续作为 desktop runner/reference runtime。
-4. 新建 `kai-runner` 或扩展现有 runtime API，提供手机可调用的远程工具执行层。
+第一波：
 
-这样可以避免把 iOS 明确不支持的 shell/PTY/TUI/stdio/LSP/sandbox 依赖拖进 mobile binary，同时保留 deepseek-tui 已经验证过的 Agent 行为和工具安全经验。
+- 新增或继续完善 `crates/mobile-agent-core`。
+- remote schema 放在 `crates/mobile-agent-core/src/remote_schema.rs`，如果 app 和 runner 都马上需要共享，可后续拆新 crate。
+- 复用 `crates/protocol/src/lib.rs` 的 event style，但不要在 schema 稳定前强行把所有 mobile events 塞回现有 desktop `EventFrame`。
+- 复用 `crates/tools/src/lib.rs` 的 registry concepts。
+- 复用并扩展 `crates/execpolicy/src/lib.rs` 作为 remote command approval 基础。
+- 从 `crates/tui/src/core/engine.rs` 挖 turn-loop behavior 和测试需求，不直接依赖实现文件。
+- 从 `crates/tui/src/client.rs`、`crates/tui/src/llm_client/*`、`crates/tui/src/models.rs` 挖 model streaming types。
+- 通过 UniFFI 暴露 iOS bindings。
 
-## Original Product Requirements
+第二波：
 
-原始产品不是“把 Rust TUI 编译到 iOS”，而是做一个手机端电脑救援 Agent。核心价值是：当用户电脑没有准备好、环境损坏、安装器失败、命令行工具缺失、浏览器下载失败、权限/网络/证书/包管理器异常时，手机端仍然可以稳定承担规划、对话、审批、状态管理和下一步指导。
+- 完善 `crates/kai-runner` 或在 release cadence 不一致时拆独立仓库。
+- 移动/改造 runner-safe 的 shell、file、diagnostics 和 HTTP MCP 支持。
+- 增加 runner capability reporting 和 approval nonce enforcement。
+- 在 runner 作为独立 binary 稳定前，保持 `DeepSeek TUI` 桌面行为不变。
 
-产品前提：
+## 明确结论
 
-- 电脑一开始可能无法运行复杂 Agent，也可能没有 Node/Bun/Go/Rust/Python。
-- 电脑可能无法安装目标软件，甚至无法联网。
-- 用户可能只能打开终端，手动执行一两条命令。
-- 手机端必须轻量、干净、可靠，不依赖电脑端已安装完整运行时。
-- 电脑端能力必须能从“无 Agent”逐步升级到“SSH/PowerShell 可执行”，再升级到“轻量 runner”。
-- 整个过程以文本、命令、日志和结构化结果为核心，不把 RDP/VNC/截图/画面流作为核心方案。
+`DeepSeek TUI` 不应整体移植到 iOS。正确路径是借用它的 protocol、approval、tool、session、runtime 思路，构建更小的手机端 `mobile-agent-core`，同时把桌面执行能力变成远程 runner tools。
 
-这个定位改变了对 deepseek-tui 的判断标准。deepseek-tui 的桌面工具能力本身很强，但它默认假设 Agent 与工具执行在同一台机器上；我们的产品要求 Agent 先在手机上独立成立，再把电脑视为一个能力逐步增长的远端 target。
-
-## Phone-to-Computer Control Model
-
-手机控制电脑应采用“手机规划，电脑执行”的严格分离模型：
-
-```text
-Phone
-  iOS App
-    - user conversation
-    - approvals
-    - target setup
-    - OCR/text paste intake
-    - keychain
-  mobile-agent-core
-    - agent loop
-    - session history
-    - diagnostic planning
-    - tool risk policy
-    - remote tool dispatcher
-    - event stream
-    - persistence
-
-Computer
-  no-agent state
-    - user manually runs commands
-    - user returns text/OCR output
-  SSH/PowerShell state
-    - remote command execution
-    - stdout/stderr stream
-    - basic file/log read
-  runner state
-    - kai-runner
-    - capabilities discovery
-    - shell/file/git/browser/MCP/LSP adapters
-    - audit log and idempotency
-```
-
-控制逻辑：
-
-- 手机端永远是 Agent owner。LLM 推理、规划、会话状态、审批上下文和用户解释都在手机端。
-- 电脑端是 tool target。它只执行明确的工具调用，不能自行扩大权限或替用户批准动作。
-- bootstrap 模式不是降级体验，而是最低保底能力。它要能在完全没有 runner 的电脑上推动诊断。
-- runner 是能力增强层，不是大模型宿主。`kai-runner` 不运行本地大模型，只执行工具、采集日志、做浏览器/文件/系统适配。
-- 所有模式共用同一套 tool risk policy、审计记录和 session timeline，避免用户从手动模式升级到 runner 后丢上下文。
-
-deepseek-tui 的 `crates/tui/src/core/engine/turn_loop.rs`、`crates/tui/src/core/session.rs`、`crates/tui/src/core/events.rs`、`crates/execpolicy/src/lib.rs` 能提供这个模型的参考；`crates/tui/src/tools/shell.rs`、`file.rs`、`mcp.rs`、`lsp/*` 则必须放到电脑端 runner 或被 remote tool 替代。
-
-## Execution Modes
-
-### 模式 1：Bootstrap 手动引导模式
-
-当电脑无法被远程连接时，手机 Agent 需要生成一步一步的诊断命令，用户在电脑终端手动执行，再把输出复制/粘贴或拍照 OCR 成文本回传手机。
-
-流程：
-
-```text
-user describes issue on phone
-  -> mobile-agent-core creates diagnostic plan
-  -> model proposes one low-risk command
-  -> approval/risk explanation shown on phone
-  -> user manually runs command on computer
-  -> user pastes/OCRs output into phone
-  -> agent parses output
-  -> next command or explanation
-  -> repeat until SSH/runner/target software becomes installable
-```
-
-需要新增：
-
-- `bootstrap_session` state：记录每一步命令、用户回传文本、判断结果和下一步。
-- `manual_output_ingest`：接收复制文本/OCR 文本，标注来源和置信度。
-- `remote.bootstrap.guide`：生成命令时必须给出风险、用途、预期输出和失败时的回传要求。
-- 命令模板库：macOS Homebrew/Xcode/network/cert，Windows PowerShell/winget/PATH/UAC/Event Log。
-
-deepseek-tui 当前有 planning、approval、conversation 机制，但没有“用户手动执行并回传输出”的一等模式，需要新增。
-
-### 模式 2：SSH / PowerShell 远程执行模式
-
-当电脑开启 SSH 或可远程执行命令时，手机 Agent 连接电脑，按计划执行低风险命令，中高风险命令必须审批，输出实时回传。
-
-流程：
-
-```text
-connect target
-  -> capability probe
-  -> diagnostic plan
-  -> risk classify command
-  -> auto-run low-risk read-only checks
-  -> request approval for medium/high risk
-  -> stream stdout/stderr
-  -> summarize and choose next step
-```
-
-需要新增：
-
-- `RemoteToolTransport::Ssh` 与 `RemoteToolTransport::PowerShell`。
-- 命令风险分类从 `ExecPolicyEngine` 的 prefix allow/deny 扩展为 target-aware policy。
-- stdout/stderr streaming event：可复用 `EventFrame::ExecCommandOutputDelta` 的思想，但放入 mobile-safe protocol。
-- idempotency 和 reconnect：远程执行必须支持 retry-safe key。
-
-deepseek-tui 的 shell manager、approval cache、exec policy 有强参考价值，但当前实现是本地 `std::process`/PTY，不能直接进手机端。
-
-### 模式 3：轻量 runner 增强模式
-
-当电脑环境足够稳定后，手机 Agent 引导安装 `kai-runner`。runner 不运行本地大模型，只负责执行工具、采集日志、浏览器自动化、文件操作、MCP 代理和 capability discovery。
-
-流程：
-
-```text
-bootstrap/SSH fixes enough prerequisites
-  -> phone proposes runner install
-  -> user approves
-  -> runner pairs with phone
-  -> runner reports capabilities
-  -> mobile-agent-core selects available tools
-  -> tool calls go through HTTPS/WebSocket/MCP
-```
-
-需要新增：
-
-- `kai-runner` pairing、auth、capability report、tool call、cancel、log stream。
-- runner 侧 adapter：shell/file/git/browser/MCP stdio/LSP/system logs。
-- mobile core capability planner：根据 runner capabilities 动态裁剪 tool catalog。
-
-deepseek-tui 适合作为 runner 参考，因为它已有 `crates/tui/src/tools/registry.rs`、`runtime_api.rs`、`mcp.rs`、`tools/file.rs`、`tools/shell.rs`、`tools/git.rs`。但它太重，不应原样作为首版 runner；应收敛成轻量执行进程。
-
-### 模式 4：复杂软件安装与浏览器辅助
-
-当安装软件需要打开网页、下载文件、登录控制台、填写表单时，手机 Agent 应优先走文本和结构化事件。
-
-流程：
-
-```text
-install requires browser
-  -> no runner: guide user manually open URL / copy error text / paste download link
-  -> runner available: remote.browser.open/extract_text/click
-  -> browser events return URL/title/text/form state
-  -> login/submit/upload/payment always require approval
-```
-
-需要新增：
-
-- `remote.browser.*` runner tools，以 URL、title、DOM text、selector、事件为核心，不依赖屏幕流。
-- 强审批动作分类：login、submit、upload、payment、download executable、grant permission。
-- 手动模式浏览器 guide：给用户简短可执行步骤，并要求回传页面文本或错误码。
-
-deepseek-tui 的 `web_run`/`fetch_url` 提供网络文本抽取参考，但桌面浏览器控制需要 runner 新实现，不能依赖 TUI。
-
-## User Journey
-
-典型用户旅程：
-
-1. 用户打开手机 App，描述“Mac 上 Homebrew 装不上”或拍照/OCR 一段终端错误。
-2. 手机 Agent 判断当前电脑能力未知，进入 bootstrap 手动引导。
-3. Agent 生成第一条低风险诊断命令，例如 `uname -a; sw_vers; command -v brew; xcode-select -p`，并解释用途。
-4. 用户在电脑终端执行，复制输出或拍照回传。
-5. Agent 解析输出，确认是 Xcode Command Line Tools 缺失、DNS 问题、代理问题、权限问题或证书问题。
-6. Agent 给出下一步。低风险诊断继续手动或 SSH 执行；高风险修复命令先展示风险并要求审批。
-7. 电脑恢复到可安装基础工具后，Agent 引导启用 SSH 或安装 `kai-runner`。
-8. 安装 runner 后，Agent 自动发现 capabilities，切换到远程工具执行。
-9. 后续安装软件、读日志、收集诊断、浏览器辅助都通过 runner 结构化执行。
-10. 会话保留完整时间线：用户问题、每条命令、输出摘要、审批决定、修复结论和回滚建议。
-
-这个 journey 要求手机端 core 有很强的“无工具可用时仍能推进”的能力。deepseek-tui 当前更偏“本地工具丰富时的 Agent”，因此需要补 bootstrap-first 产品层。
-
-## Scenario Coverage
-
-| 场景 | deepseek-tui 当前可复用点 | 缺口 | 推荐承载位置 | MVP |
-|---|---|---|---|---|
-| macOS Homebrew 安装失败 | shell tool、diagnostics、approval、planning | bootstrap 手动命令/OCR、远程 SSH transport、brew 专用诊断模板 | iOS core 规划 + runner/SSH 执行 | 必须 |
-| macOS Xcode Command Line Tools 缺失 | shell 执行和错误解释可参考 | `xcode-select --install` 是 GUI/系统动作，需要手动步骤和审批 | iOS core guide + runner 诊断 | 必须 |
-| macOS 证书/代理/DNS/权限异常 | network policy、fetch/web、shell diagnostics 思路 | 系统网络配置读取、Keychain/证书说明、代理环境差异 | runner system diagnose + iOS 解释 | 必须 |
-| Windows Python/Node/VS Code 安装失败 | planning/approval/session 可复用 | PowerShell/winget/MSI logs/Event Log/UAC 适配缺失 | runner PowerShell adapter | 必须 |
-| Windows winget/PowerShell/PATH/UAC 异常 | exec policy 思路可复用 | Windows 命令风险模型和权限升级流程缺失 | runner + iOS approval | 必须 |
-| Windows Event Log 或安装日志 | file/log read 思路可复用 | Event Log API/PowerShell query tool 缺失 | runner | Should |
-| 用户不会看命令行，需要翻译错误文本 | LLM conversation、message history 可复用 | OCR/text ingest、错误文本结构化解析 | iOS core | 必须 |
-| 电脑无法联网，手机给离线修复步骤 | planning 可复用 | offline remediation templates、手机下载/传输策略、校验 hash | iOS core + manual guide | Should |
-| 引导安装更强 runner | runtime API/MCP/tool registry 可参考 | pairing、installer、capability discovery、安全模型 | iOS core + runner | 必须 |
-
-总体覆盖判断：deepseek-tui 对“已有本地执行能力后的 Agent 行为”覆盖较好；对“电脑一开始不可用、只能手动救援”的产品最低保底能力覆盖不足，需要新增 bootstrap 产品层。
-
-## Product Capability Mapping
-
-| 产品能力 | deepseek-tui 当前是否已有类似能力 | 可复用模块 | 需要新增模块 | 适合 iOS core | 应在电脑 runner | MVP 必须 |
-|---|---|---|---|---|---|---|
-| 用户意图理解 | 有，基于 LLM 对话和 system prompt | `crates/tui/src/core/engine/turn_loop.rs`、`prompts/*` | mobile rescue prompt、故障分类 taxonomy | 是 | 否 | 是 |
-| 诊断计划生成 | 有，`update_plan`/checklist | `tools/plan.rs`、`tools/todo.rs` | rescue-specific diagnostic playbooks | 是 | 否 | 是 |
-| Bootstrap 手动引导 | 部分有对话能力，无一等模式 | session/message/planning | `BootstrapSession`、manual command guide、OCR/text ingest | 是 | 否 | 是 |
-| SSH 远程执行 | 无，当前是本地 shell | `execpolicy`、shell result schema 思路 | `SshTransport`、remote shell schema、streaming reconnect | 调度/审批在 iOS | 执行在远端 shell | 是 |
-| PowerShell 远程执行 | 无 | `execpolicy` 思路 | `PowerShellTransport`、Windows risk classifier | 调度/审批在 iOS | 执行在 Windows | 是 |
-| 远程文件读取 | 本地 file tools 有 | `tools/file.rs` schema/分页思想 | `remote.file.read` transport、sensitive path policy | 调度/审批在 iOS | 实际读取在 runner | 是 |
-| 安装器日志采集 | 部分可用 shell/file/git | `tools/file.rs`、`diagnostics.rs` | macOS/Windows installer log adapters | 策略在 iOS | 采集在 runner | Should |
-| 系统诊断 | 有本地 diagnostics | `tools/diagnostics.rs`、runtime API health 思路 | `remote.diagnose.system` per OS checks | 规划/解释在 iOS | 探测在 runner/SSH | 是 |
-| 包管理器修复 | 可通过本地 shell 完成 | shell、approval、task gate 思路 | brew/winget/apt/npm repair playbooks | 规划/审批在 iOS | 执行在 SSH/runner | 是 |
-| 浏览器自动化 | 有 web/fetch 文本工具，非桌面浏览器控制 | `web_run.rs`、`fetch_url.rs` 思路 | `remote.browser.*` runner tools、manual browser guide | 规划/审批在 iOS | 浏览器控制在 runner | Should |
-| runner 安装与升级 | 无专门能力 | CLI/install docs、runtime API 参考 | `remote.bootstrap.guide` installer flow、pairing、self-update | 引导/审批在 iOS | 安装/升级在电脑 | 是 |
-| capability discovery | 部分有 MCP/tool listing/runtime info | `runtime_api.rs`、`mcp.rs`、`ToolRegistryBuilder` | runner capability schema、dynamic tool catalog | 是 | runner 上报 | 是 |
-| 工具风险评估 | 有 shell prefix approval | `crates/execpolicy`、`approval_cache.rs` | target-aware risk classifier、OS-specific dangerous command rules | 是 | runner 二次校验 | 是 |
-| 用户审批 | 有 TUI approval 和 runtime approval endpoint | `core/engine/approval.rs`、`runtime_api.rs` | Swift approval sheet、biometric optional、remote approval payload | 是 | runner enforcement mirror | 是 |
-| 审计日志 | 有 tool audit/log/runtime events | `runtime_log.rs`、`audit.rs`、`runtime_threads.rs` | mobile audit timeline、runner signed log entries | 是 | 是 | 是 |
-| 回滚建议 | 有 snapshot/revert_turn，但偏本地 git/workspace | `snapshot/*`、`revert_turn.rs` 思路 | remote rollback plan、backup refs、Windows restore guidance | 生成建议在 iOS | 备份/恢复在 runner | Should |
-| 会话恢复 | 有 session/runtime thread/checkpoint | `crates/state`、`runtime_threads.rs`、`session_manager.rs` | mobile persistence abstraction、transport reconnect replay | 是 | runner job replay | 是 |
-
-MVP 的底线不是覆盖所有桌面工具，而是覆盖：用户意图理解、诊断计划、bootstrap、SSH/PowerShell、基础文件/日志读取、系统诊断、包管理器修复、风险评估、审批、审计、会话恢复、runner 安装引导。
-
-## Fit Assessment for Our Product
-
-### 是否适合作为“手机端 Agent Core”
-
-适配度：Low。
-
-原因：
-
-- 正面：deepseek-tui 已经验证了 DeepSeek V4 thinking/tool-call Agent loop、审批、计划、事件、会话、MCP、工具目录和长输出处理，这些是手机 Agent core 的关键参考。
-- 负面：当前生产 core 在 `crates/tui` 内，和 TUI、本地 workspace、本地 shell、PTY、本地 MCP stdio、本地 LSP、桌面 sandbox、快照系统耦合很深。
-- 产品缺口：它默认“Agent 所在机器就是工具执行机器”，而我们的产品要求“手机 Agent 独立存在，电脑只是逐步增强的远程 target”。
-
-判断：不建议把 `crates/tui` 减法移植成 iOS core。建议新建 `mobile-agent-core`，复用协议、审批策略、tool schema 思路和 turn-loop 行为测试。
-
-### 本地 shell/file/git/LSP 是否容易替换成 remote tools
-
-适配度：Medium。
-
-替换是可行的，但不是简单改 transport：
-
-- `ToolRegistryBuilder` 已经集中注册工具，提供替换入口。
-- `ToolContext` 当前包含 workspace、shell_manager、sandbox_backend、LSP、runtime services 等本地对象，需要拆成 remote-neutral context。
-- `turn_loop` 中 tool execution、LSP diagnostics、capacity、working set、snapshots 互相穿插，需要先抽 `ToolExecutor` 和 `ToolPostProcessor`。
-- shell/file/git/LSP 实现本身应保留在 runner 侧，而不是改造成 iOS 可编译。
-
-最大工作是把“工具调用协议”和“工具执行实现”彻底分离。
-
-### skills/MCP/approval/session 是否能服务远程电脑救援
-
-适配度：Medium。
-
-- skills：适合变成 rescue playbooks，例如 `homebrew-repair`、`windows-winget-repair`、`offline-install`。但 mobile core 只应加载轻量文本技能，不应执行技能里的本地命令。
-- MCP：适合作为 runner 内部扩展机制，尤其是 MCP over HTTP/SSE。手机端不应 spawn MCP stdio server。
-- approval：高度可复用。需要从 shell prefix approval 扩展为 remote tool risk approval。
-- session：方向正确。需要增加 bootstrap step、target capability、manual output、approval decision、runner job id 等字段。
-
-### 是否支持 bootstrap -> SSH -> runner 的能力升级
-
-当前适配度：Low；架构参考价值：Medium。
-
-deepseek-tui 当前没有把 target capability 当作会话一等状态，也没有 bootstrap 手动引导状态机。它有 runtime API、MCP manager、tool registry 和 session timeline，可以作为能力升级设计参考，但需要新增：
-
-- `TargetProfile`
-- `TargetCapabilitySet`
-- `ExecutionMode`
-- `BootstrapSession`
-- `TransportUpgradePlan`
-- dynamic remote tool catalog
-
-### 是否能彻底分离“电脑端执行”和“手机端规划”
-
-当前不能彻底分离。最大改造点是 Agent loop 的依赖倒置：
-
-```text
-current:
-Engine -> ToolRegistry -> local ToolContext -> local shell/file/git/LSP/MCP
-
-target:
-MobileAgentCore -> ToolCatalog -> ApprovalGate -> RemoteToolTransport
-Runner -> LocalToolRegistry -> shell/file/git/LSP/MCP
-```
-
-必须先抽：
-
-- `ModelClient`
-- `EventSink`
-- `PersistenceStore`
-- `ToolCatalog`
-- `ToolRiskPolicy`
-- `ApprovalGate`
-- `RemoteToolTransport`
-- `CapabilityProvider`
-
-然后让 `crates/tui` 和 `mobile-agent-core` 各自组合这些接口。
-
-### 明确结论
-
-- deepseek-tui 作为手机端 Agent Core 的适配度：Low。它的 Agent 行为有价值，但当前生产 runtime 与桌面本地执行耦合过深，不适合作为手机 core 直接改造。
-- deepseek-tui 作为电脑端 runner 的适配度：High。它已有 shell/file/git/MCP/runtime API/approval 的大量实现，适合被瘦身成 runner 或作为 runner 的实现参考。
-- deepseek-tui 作为架构参考的价值：High。
-- 是否建议继续投入一周做 technical spike：建议。
-
-一周 spike 的目标应非常收敛：
-
-1. 不移植 TUI。
-2. 新建最小 `mobile-agent-core` prototype 或 crate skeleton。
-3. 实现 fake model/fake transport 的 bootstrap loop。
-4. 实现一个真实 SSH `remote.shell.exec` 或本地 mock runner。
-5. 跑通“Homebrew 安装失败”诊断：手机规划、审批、执行/手动回传、解释、下一步。
-
-如果这个 spike 能证明 `turn_loop + approval + remote tool transport + session replay` 可以独立于 TUI 和本地工具运行，就值得继续投入拆 core。若 spike 发现 `crates/tui` 的 turn loop 依赖难以拆开，则应保留 deepseek-tui 作为 runner/reference，手机端 core 从零按上述接口重写。
+投资建议：继续一周 technical spike。该周应产出可在手机上运行的 bootstrap demo 和 SSH diagnostic prototype。若能证明 `turn_loop + approval + remote tool transport + session replay` 可以独立于 TUI 和本地工具运行，再继续投入 2-4 周做包含 persistence、approval 和 minimal runner 的 MVP。若 spike 发现 `crates/tui` 的 turn loop 依赖难以拆开，则保留 `DeepSeek TUI` 作为 runner/reference，手机端 core 按上述接口重写。
