@@ -95,6 +95,92 @@ def test_bundle_directory_discovers_results_md() -> None:
         raise AssertionError(f"unexpected non-evidence markdown source in output:\n{output}")
 
 
+def test_mobile_web_ssh_bundle_pass_result() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bundle = Path(tmpdir) / "validation" / "mobile-web-ssh" / "2026-05-25-mobile-web-ssh-linux-lab"
+        bundle.mkdir(parents=True)
+        (bundle / "evidence-log.md").write_text(
+            textwrap.dedent(
+                """\
+                # Evidence Log
+
+                - Boundary: Linux/LAN Web simulator evidence only; not iOS, macOS, Windows, or real mobile-platform evidence.
+                """
+            ),
+            encoding="utf-8",
+        )
+        (bundle / "results.md").write_text(
+            textwrap.dedent(
+                """\
+                # Results
+
+                Boundary: Linux/LAN Web simulator evidence only; not iOS, macOS, Windows, or real mobile-platform evidence.
+
+                - mobile_web_ssh_smoke: PASS (exit 0)
+                - mobile_web_ssh_flow_simulator: PASS (exit 0)
+                """
+            ),
+            encoding="utf-8",
+        )
+        (bundle / "commands.log").write_text(
+            "$ scripts/mobile_web_ssh_smoke.py --json\nexit_code=0\n",
+            encoding="utf-8",
+        )
+
+        output = run_script(str(bundle)).stdout
+
+    assert_contains(output, "## Linux/LAN Web SSH Simulator")
+    assert_contains(
+        output,
+        "Linux/LAN Web simulator evidence only; not iOS, macOS, Windows, or real mobile-platform evidence.",
+    )
+    assert_contains(
+        output,
+        f"| Linux/LAN Web SSH Simulator | Pass | W5 / LF-M9 | Simulator command bundle: None; passed commands: mobile_web_ssh_smoke, mobile_web_ssh_flow_simulator | No | {bundle / 'results.md'} |",
+    )
+
+
+def test_mobile_web_ssh_bundle_fail_result() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bundle = Path(tmpdir) / "validation" / "mobile-web-ssh" / "2026-05-25-mobile-web-ssh-linux-lab"
+        bundle.mkdir(parents=True)
+        (bundle / "evidence-log.md").write_text(
+            textwrap.dedent(
+                """\
+                # Evidence Log
+
+                - Boundary: Linux/LAN Web simulator evidence only; not iOS, macOS, Windows, or real mobile-platform evidence.
+                """
+            ),
+            encoding="utf-8",
+        )
+        (bundle / "results.md").write_text(
+            textwrap.dedent(
+                """\
+                # Results
+
+                Boundary: Linux/LAN Web simulator evidence only; not iOS, macOS, Windows, or real mobile-platform evidence.
+
+                - mobile_web_ssh_smoke: PASS (exit 0)
+                - mobile_web_ssh_flow_simulator: FAIL (exit 1)
+                """
+            ),
+            encoding="utf-8",
+        )
+        (bundle / "commands.log").write_text(
+            "$ scripts/mobile_web_ssh_flow_simulator.py --json\nexit_code=1\n",
+            encoding="utf-8",
+        )
+
+        output = run_script(str(bundle)).stdout
+
+    assert_contains(output, "## Linux/LAN Web SSH Simulator")
+    assert_contains(
+        output,
+        f"| Linux/LAN Web SSH Simulator | Fail | W5 / LF-M9 | Simulator command bundle: Investigate failed commands: mobile_web_ssh_flow_simulator | No | {bundle / 'results.md'} |",
+    )
+
+
 def test_multiple_files_keep_source_for_each_row() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -167,6 +253,8 @@ def main() -> int:
     tests = [
         test_completed_evidence_log,
         test_bundle_directory_discovers_results_md,
+        test_mobile_web_ssh_bundle_pass_result,
+        test_mobile_web_ssh_bundle_fail_result,
         test_multiple_files_keep_source_for_each_row,
         test_empty_results_names_checked_sources,
         test_checklist_templates_parse,

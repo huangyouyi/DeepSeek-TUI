@@ -48,6 +48,13 @@ export type DiagnosticKey =
   | "network"
   | "working_directory";
 
+export type DiagnosticPreset = {
+  key: DiagnosticKey;
+  label: string;
+  command: string;
+  requires_approval: boolean;
+};
+
 export type DiagnosticRequest = {
   session_id: string;
   diagnostic: DiagnosticKey;

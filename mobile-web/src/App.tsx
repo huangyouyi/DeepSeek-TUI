@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useReducer, useState } from "react";
 import {
   approveCommand,
   createSession,
+  getDiagnosticPresets,
   getHealth,
   getRecentAudit,
   getSshTarget,
@@ -10,17 +11,14 @@ import {
   runDiagnostic,
   updateSshTarget
 } from "./api";
-import { initialAppState, reduceEvent, withSseStatus } from "./state";
-import type { DiagnosticKey, ServerEvent } from "./types";
-
-const diagnostics: Array<{ key: DiagnosticKey; label: string; command: string }> = [
-  { key: "system_info", label: "System info", command: "uname -a" },
-  { key: "current_user", label: "Current user", command: "id" },
-  { key: "disk_usage", label: "Disk usage", command: "df -h" },
-  { key: "memory", label: "Memory", command: "free -m || cat /proc/meminfo" },
-  { key: "network", label: "Network", command: "ip addr || ifconfig" },
-  { key: "working_directory", label: "Working directory", command: "pwd" }
-];
+import {
+  fallbackDiagnosticPresets,
+  initialAppState,
+  reduceEvent,
+  resolveDiagnosticPresets,
+  withSseStatus
+} from "./state";
+import type { DiagnosticKey, DiagnosticPreset, ServerEvent } from "./types";
 
 type LocalAction =
   | { type: "event"; event: ServerEvent }
@@ -52,6 +50,7 @@ export default function App() {
   const [command, setCommand] = useState("");
   const [cwd, setCwd] = useState("");
   const [targetForm, setTargetForm] = useState({ host: "", user: "", port: "22" });
+  const [diagnostics, setDiagnostics] = useState<DiagnosticPreset[]>(fallbackDiagnosticPresets);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,6 +67,17 @@ export default function App() {
         if (!cancelled) {
           dispatch({ type: "server", status: "error" });
           setError(messageFromError(err));
+        }
+      }
+
+      try {
+        const presets = await getDiagnosticPresets();
+        if (!cancelled) {
+          setDiagnostics(resolveDiagnosticPresets(presets));
+        }
+      } catch {
+        if (!cancelled) {
+          setDiagnostics(fallbackDiagnosticPresets);
         }
       }
 
@@ -174,7 +184,7 @@ export default function App() {
     }
     const approval = state.pendingApprovals.find((item) => item.id === busy);
     return approval ? "Sending approval response" : "Working";
-  }, [busy, state.pendingApprovals]);
+  }, [busy, diagnostics, state.pendingApprovals]);
 
   async function handleTargetSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

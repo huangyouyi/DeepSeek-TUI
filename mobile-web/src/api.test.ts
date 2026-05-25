@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   approveCommand,
   createSession,
+  getDiagnosticPresets,
   listMessages,
   prepareCommand,
   rejectCommand,
@@ -67,6 +68,21 @@ describe("api client", () => {
       host: "192.168.30.244",
       user: "root",
       port: 2222
+    });
+  });
+
+  it("loads diagnostic presets from the server", async () => {
+    const presets = [
+      { key: "system_info", label: "Kernel", command: "uname -a", requires_approval: false },
+      { key: "network", label: "Interfaces", command: "ip addr", requires_approval: false }
+    ];
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(presets));
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    await expect(getDiagnosticPresets(api)).resolves.toEqual(presets);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/diagnostics/presets", {
+      headers: {}
     });
   });
 });

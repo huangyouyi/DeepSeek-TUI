@@ -7,7 +7,8 @@ use std::{
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
+    middleware,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -32,6 +33,33 @@ const PROTOCOL: &str = "mobile-web-v1";
 pub struct MobileWebServerConfig {
     pub use_real_model: bool,
     pub static_dir: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+struct AccessToken {
+    value: Arc<str>,
+}
+
+impl std::fmt::Debug for AccessToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AccessToken")
+            .field("token_present", &true)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl AccessToken {
+    fn new(value: String) -> Self {
+        Self {
+            value: Arc::from(value),
+        }
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        self.value.as_ref() == candidate
+    }
 }
 
 #[derive(Clone)]
@@ -65,7 +93,35 @@ pub fn app_router(state: AppState, use_real_model: bool) -> Router {
 }
 
 pub fn app_router_with_config(state: AppState, config: MobileWebServerConfig) -> Router {
-    app_router_inner(state, config, Arc::new(SystemSshCommandRunner))
+    app_router_inner(state, config, Arc::new(SystemSshCommandRunner), None)
+}
+
+pub fn app_router_with_access_token(
+    state: AppState,
+    use_real_model: bool,
+    access_token: String,
+) -> Router {
+    app_router_with_config_and_access_token(
+        state,
+        MobileWebServerConfig {
+            use_real_model,
+            static_dir: None,
+        },
+        access_token,
+    )
+}
+
+pub fn app_router_with_config_and_access_token(
+    state: AppState,
+    config: MobileWebServerConfig,
+    access_token: String,
+) -> Router {
+    app_router_inner(
+        state,
+        config,
+        Arc::new(SystemSshCommandRunner),
+        Some(AccessToken::new(access_token)),
+    )
 }
 
 pub fn app_router_with_runner<R>(state: AppState, use_real_model: bool, runner: R) -> Router
@@ -79,6 +135,7 @@ where
             static_dir: None,
         },
         Arc::new(runner),
+        None,
     )
 }
 
@@ -86,6 +143,7 @@ fn app_router_inner(
     state: AppState,
     config: MobileWebServerConfig,
     runner: Arc<dyn CommandRunner>,
+    access_token: Option<AccessToken>,
 ) -> Router {
     let router_state = RouterState {
         app: state,
@@ -93,8 +151,7 @@ fn app_router_inner(
         runner,
     };
 
-    let router = Router::new()
-        .route("/health", get(health))
+    let protected_routes = Router::new()
         .route("/event", get(events))
         .route("/api/ssh/target", get(get_ssh_target).put(put_ssh_target))
         .route("/api/sessions", get(list_sessions).post(create_session))
@@ -104,14 +161,66 @@ fn app_router_inner(
         .route("/api/diagnostics/run", post(run_diagnostic))
         .route("/api/commands/prepare", post(prepare_command))
         .route("/api/approvals/{id}/respond", post(respond_approval))
-        .route("/api/audit/recent", get(list_audit))
-        .with_state(router_state);
+        .route("/api/audit/recent", get(list_audit));
 
-    if let Some(static_dir) = config.static_dir {
+    let protected_routes = if let Some(access_token) = access_token {
+        protected_routes.route_layer(middleware::from_fn(
+            move |headers: HeaderMap, request, next| {
+                require_access_token(headers, request, next, access_token.clone())
+            },
+        ))
+    } else {
+        protected_routes
+    };
+
+    let router = Router::new()
+        .route("/health", get(health))
+        .merge(protected_routes);
+
+    let router = if let Some(static_dir) = config.static_dir {
         router.fallback_service(ServeDir::new(static_dir))
     } else {
         router
+    };
+
+    router.with_state(router_state)
+}
+
+async fn require_access_token(
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: middleware::Next,
+    access_token: AccessToken,
+) -> impl IntoResponse {
+    if request_access_token_matches(&headers, &access_token) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "code": "unauthorized",
+                "message": "missing or invalid mobile web access token"
+            })),
+        )
+            .into_response()
     }
+}
+
+fn request_access_token_matches(headers: &HeaderMap, access_token: &AccessToken) -> bool {
+    bearer_token(headers).is_some_and(|candidate| access_token.matches(candidate))
+        || mobile_web_token(headers).is_some_and(|candidate| access_token.matches(candidate))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+fn mobile_web_token(headers: &HeaderMap) -> Option<&str> {
+    headers.get("X-Mobile-Web-Token")?.to_str().ok()
 }
 
 async fn health(State(state): State<RouterState>) -> Json<HealthResponse> {

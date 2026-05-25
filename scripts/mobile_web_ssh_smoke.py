@@ -52,9 +52,12 @@ def request_json(
     path: str,
     payload: dict[str, Any] | None = None,
     timeout: float = 5.0,
+    access_token: str | None = None,
 ) -> HttpResult:
     data = None
     headers = {"Accept": "application/json"}
+    if access_token:
+        headers["X-Mobile-Web-Token"] = access_token
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -81,10 +84,13 @@ def request_json(
     return result
 
 
-def connect_event(server: str) -> dict[str, Any]:
+def connect_event(server: str, access_token: str | None = None) -> dict[str, Any]:
+    headers = {"Accept": "text/event-stream"}
+    if access_token:
+        headers["X-Mobile-Web-Token"] = access_token
     request = urllib.request.Request(
         server.rstrip("/") + "/event",
-        headers={"Accept": "text/event-stream"},
+        headers=headers,
         method="GET",
     )
     try:
@@ -143,7 +149,13 @@ def maybe_update_target(args: argparse.Namespace) -> Any | None:
     }
     if not values:
         return None
-    return request_json(args.server, "PUT", "/api/ssh/target", values).json()
+    return request_json(
+        args.server,
+        "PUT",
+        "/api/ssh/target",
+        values,
+        access_token=args.access_token,
+    ).json()
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -152,9 +164,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if health.get("status") != "ok":
         raise ScriptError("GET /health did not return status ok")
 
-    event = connect_event(args.server)
-    target = request_json(args.server, "GET", "/api/ssh/target").json()
-    session = request_json(args.server, "POST", "/api/sessions", {"title": "mobile web smoke"}).json()
+    event = connect_event(args.server, args.access_token)
+    target = request_json(args.server, "GET", "/api/ssh/target", access_token=args.access_token).json()
+    session = request_json(
+        args.server,
+        "POST",
+        "/api/sessions",
+        {"title": "mobile web smoke"},
+        access_token=args.access_token,
+    ).json()
     session_id = extract_session_id(session)
     diagnostic = request_json(
         args.server,
@@ -162,8 +180,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "/api/diagnostics/run",
         {"session_id": session_id, "diagnostic": args.diagnostic},
         timeout=args.timeout,
+        access_token=args.access_token,
     ).json()
-    audit_payload = request_json(args.server, "GET", "/api/audit/recent").json()
+    audit_payload = request_json(args.server, "GET", "/api/audit/recent", access_token=args.access_token).json()
     entries = audit_entries(audit_payload)
 
     assert_no_secret_text({"health": health, "target": target, "diagnostic": diagnostic, "audit": entries})
@@ -203,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-host", help="override SSH target host before smoke checks")
     parser.add_argument("--ssh-user", help="override SSH target user before smoke checks")
     parser.add_argument("--ssh-port", type=int, help="override SSH target port before smoke checks")
+    parser.add_argument("--access-token", help="optional mobile web access token sent as an HTTP header")
     parser.add_argument("--timeout", type=float, default=15.0, help="HTTP timeout for command routes")
     return parser
 

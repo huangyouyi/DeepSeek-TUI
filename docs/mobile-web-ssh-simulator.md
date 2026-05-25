@@ -22,6 +22,13 @@ cargo run -p deepseek-mobile-web-server -- \
 
 For local-only testing, use `--host 127.0.0.1`.
 
+The default development mode has no API authorization. For LAN testing where a
+shared token is useful, start the server with `--access-token <token>` and pass
+the same value to the script helpers with `--access-token <token>`. The token is
+accepted through `Authorization: Bearer <token>` or `X-Mobile-Web-Token:
+<token>`. `/health` remains public. Evidence command logs redact the token
+argument.
+
 The server prints the bind URL, LAN URL, SSH target, and model mode. It does not
 print DeepSeek API tokens, SSH secrets, approval nonces, command leases, bearer
 tokens, or idempotency keys.
@@ -83,6 +90,9 @@ python3 scripts/mobile_web_ssh_flow_simulator.py \
   --auto-approve \
   --json
 ```
+
+When the server uses `--access-token dev-token`, add
+`--access-token dev-token` to the smoke, flow, and evidence commands.
 
 Run the script smoke test without a real SSH host:
 

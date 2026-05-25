@@ -135,6 +135,10 @@ python3 scripts/mobile_web_ssh_smoke.py --server http://127.0.0.1:8788 --json
 python3 scripts/mobile_web_ssh_flow_simulator.py --server http://127.0.0.1:8788 --auto-approve --json
 ```
 
+If the Rust server was started with `--access-token <token>`, pass the same
+token to both script checks with `--access-token <token>`. The evidence helper
+redacts that argument in `commands.log`.
+
 Expected result:
 
 - `/health`, `/event`, `/api/ssh/target`, `/api/sessions`, and

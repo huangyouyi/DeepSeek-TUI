@@ -3,6 +3,7 @@ import type {
   AuditEntry,
   CommandPrepareRequest,
   DiagnosticKey,
+  DiagnosticPreset,
   DiagnosticRequest,
   DiagnosticResponse,
   HealthResponse,
@@ -70,6 +71,10 @@ export function createSession(api?: ApiContext): Promise<SessionSummary> {
 
 export function listMessages(sessionId: string, api?: ApiContext): Promise<Message[]> {
   return requestJson<Message[]>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, undefined, api);
+}
+
+export function getDiagnosticPresets(api?: ApiContext): Promise<DiagnosticPreset[]> {
+  return requestJson<DiagnosticPreset[]>("/api/diagnostics/presets", undefined, api);
 }
 
 export function runDiagnostic(

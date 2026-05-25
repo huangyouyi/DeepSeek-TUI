@@ -1,4 +1,12 @@
-import type { AuditEntry, Message, PendingApproval, ServerEvent, SessionSummary, SshTarget } from "./types";
+import type {
+  AuditEntry,
+  DiagnosticPreset,
+  Message,
+  PendingApproval,
+  ServerEvent,
+  SessionSummary,
+  SshTarget
+} from "./types";
 
 export type SseStatus = "connecting" | "connected" | "disconnected" | "error";
 
@@ -39,6 +47,19 @@ export const initialAppState: AppState = {
   timeline: [],
   approvalActions: ["approve_once", "reject"]
 };
+
+export const fallbackDiagnosticPresets: DiagnosticPreset[] = [
+  { key: "system_info", label: "System info", command: "uname -a", requires_approval: false },
+  { key: "current_user", label: "Current user", command: "id", requires_approval: false },
+  { key: "disk_usage", label: "Disk usage", command: "df -h", requires_approval: false },
+  { key: "memory", label: "Memory", command: "free -m || cat /proc/meminfo", requires_approval: false },
+  { key: "network", label: "Network", command: "ip addr || ifconfig", requires_approval: false },
+  { key: "working_directory", label: "Working directory", command: "pwd", requires_approval: false }
+];
+
+export function resolveDiagnosticPresets(presets: DiagnosticPreset[] | undefined): DiagnosticPreset[] {
+  return presets && presets.length > 0 ? presets : fallbackDiagnosticPresets;
+}
 
 export function reduceEvent(state: AppState, event: ServerEvent): AppState {
   switch (event.type) {

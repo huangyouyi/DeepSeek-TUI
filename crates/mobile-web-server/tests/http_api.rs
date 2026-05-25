@@ -2,7 +2,9 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
-use deepseek_mobile_web_server::{AppState, AuditEntry, SshTarget, app_router};
+use deepseek_mobile_web_server::{
+    AppState, AuditEntry, SshTarget, app_router, app_router_with_access_token,
+};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -247,5 +249,146 @@ async fn http_api_diagnostic_presets_return_read_only_metadata() {
                 "requires_approval": false
             }
         ])
+    );
+}
+
+#[tokio::test]
+async fn http_api_default_router_leaves_json_api_unprotected() {
+    let response = app_router(test_state(), false)
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_response(response).await, json!([]));
+}
+
+#[tokio::test]
+async fn http_api_protected_json_api_rejects_missing_token() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(response).await,
+        json!({
+            "code": "unauthorized",
+            "message": "missing or invalid mobile web access token"
+        })
+    );
+}
+
+#[tokio::test]
+async fn http_api_protected_event_rejects_missing_token() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/event")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(response).await,
+        json!({
+            "code": "unauthorized",
+            "message": "missing or invalid mobile web access token"
+        })
+    );
+}
+
+#[tokio::test]
+async fn http_api_protected_json_api_rejects_wrong_token() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .header(header::AUTHORIZATION, "Bearer wrong-token")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(response).await,
+        json!({
+            "code": "unauthorized",
+            "message": "missing or invalid mobile web access token"
+        })
+    );
+}
+
+#[tokio::test]
+async fn http_api_protected_json_api_accepts_bearer_token() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .header(header::AUTHORIZATION, "Bearer secret-token")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_response(response).await, json!([]));
+}
+
+#[tokio::test]
+async fn http_api_protected_json_api_accepts_x_mobile_web_token() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .header("X-Mobile-Web-Token", "secret-token")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_response(response).await, json!([]));
+}
+
+#[tokio::test]
+async fn http_api_protected_health_remains_public() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response(response).await,
+        json!({
+            "status": "ok",
+            "service": "deepseek-mobile-web-server",
+            "protocol": "mobile-web-v1",
+            "model": "mock"
+        })
     );
 }

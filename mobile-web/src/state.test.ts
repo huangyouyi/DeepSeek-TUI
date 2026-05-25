@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { initialAppState, reduceEvent } from "./state";
+import {
+  fallbackDiagnosticPresets,
+  initialAppState,
+  reduceEvent,
+  resolveDiagnosticPresets
+} from "./state";
 import type { PendingApproval, ServerEvent } from "./types";
 
 describe("reduceEvent", () => {
@@ -65,5 +70,17 @@ describe("reduceEvent", () => {
 
     expect(next.timeline[0].kind).toBe("stdout");
     expect(next.timeline[0].text).toBe(output);
+  });
+});
+
+describe("diagnostic presets", () => {
+  it("uses loaded presets when present and falls back to local presets when loading fails", () => {
+    const loaded = [
+      { key: "system_info" as const, label: "Kernel", command: "uname -a", requires_approval: false }
+    ];
+
+    expect(resolveDiagnosticPresets(loaded)).toEqual(loaded);
+    expect(resolveDiagnosticPresets(undefined)).toEqual(fallbackDiagnosticPresets);
+    expect(resolveDiagnosticPresets([])).toEqual(fallbackDiagnosticPresets);
   });
 });

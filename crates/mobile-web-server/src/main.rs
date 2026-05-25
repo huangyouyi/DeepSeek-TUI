@@ -3,6 +3,7 @@ use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 use clap::Parser;
 use deepseek_mobile_web_server::{
     AppState, MobileWebServerConfig, SshTarget, app_router_with_config,
+    app_router_with_config_and_access_token,
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -24,6 +25,8 @@ struct Args {
     use_real_model: bool,
     #[arg(long)]
     static_dir: Option<PathBuf>,
+    #[arg(long)]
+    access_token: Option<String>,
 }
 
 #[tokio::main]
@@ -58,6 +61,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         "model access {}",
         if args.use_real_model { "real" } else { "mock" }
     );
+    info!(
+        "access token {}",
+        if args.access_token.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     let static_dir = args.static_dir;
     if let Some(static_dir) = &static_dir {
@@ -65,13 +76,16 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let listener = TcpListener::bind(bind_addr).await?;
-    let app = app_router_with_config(
-        AppState::new(target),
-        MobileWebServerConfig {
-            use_real_model: args.use_real_model,
-            static_dir,
-        },
-    );
+    let state = AppState::new(target);
+    let config = MobileWebServerConfig {
+        use_real_model: args.use_real_model,
+        static_dir,
+    };
+    let app = if let Some(access_token) = args.access_token {
+        app_router_with_config_and_access_token(state, config, access_token)
+    } else {
+        app_router_with_config(state, config)
+    };
     axum::serve(listener, app).await?;
     Ok(())
 }

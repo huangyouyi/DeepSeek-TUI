@@ -52,9 +52,12 @@ def request_json(
     path: str,
     payload: dict[str, Any] | None = None,
     timeout: float = 10.0,
+    access_token: str | None = None,
 ) -> HttpResult:
     data = None
     headers = {"Accept": "application/json"}
+    if access_token:
+        headers["X-Mobile-Web-Token"] = access_token
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -141,7 +144,13 @@ def maybe_update_target(args: argparse.Namespace) -> Any | None:
     }
     if not values:
         return None
-    return request_json(args.server, "PUT", "/api/ssh/target", values).json()
+    return request_json(
+        args.server,
+        "PUT",
+        "/api/ssh/target",
+        values,
+        access_token=args.access_token,
+    ).json()
 
 
 def require_audit_contains(entries: list[Any], needle: str) -> None:
@@ -155,16 +164,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if health.get("status") != "ok":
         raise ScriptError("GET /health did not return status ok")
 
-    target = request_json(args.server, "GET", "/api/ssh/target").json()
+    target = request_json(args.server, "GET", "/api/ssh/target", access_token=args.access_token).json()
     session = request_json(
         args.server,
         "POST",
         "/api/sessions",
         {"title": "mobile web ssh flow simulator"},
+        access_token=args.access_token,
     ).json()
     session_id = extract_session_id(session)
     messages = extract_messages(
-        request_json(args.server, "GET", f"/api/sessions/{session_id}/messages").json()
+        request_json(
+            args.server,
+            "GET",
+            f"/api/sessions/{session_id}/messages",
+            access_token=args.access_token,
+        ).json()
     )
 
     diagnostic = request_json(
@@ -173,6 +188,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "/api/diagnostics/run",
         {"session_id": session_id, "diagnostic": args.diagnostic},
         timeout=args.timeout,
+        access_token=args.access_token,
     ).json()
 
     reject_prepare = request_json(
@@ -180,6 +196,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "POST",
         "/api/commands/prepare",
         {"session_id": session_id, "command": args.reject_command},
+        access_token=args.access_token,
     ).json()
     reject_approval_id = extract_approval_id(reject_prepare)
     reject_response = request_json(
@@ -188,6 +205,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         f"/api/approvals/{reject_approval_id}/respond",
         {"response": "reject"},
         timeout=args.timeout,
+        access_token=args.access_token,
     ).json()
 
     approve_prepare = request_json(
@@ -195,6 +213,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "POST",
         "/api/commands/prepare",
         {"session_id": session_id, "command": args.approve_command},
+        access_token=args.access_token,
     ).json()
     approve_approval_id = extract_approval_id(approve_prepare)
     approve_response = None
@@ -205,9 +224,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             f"/api/approvals/{approve_approval_id}/respond",
             {"response": "approve_once"},
             timeout=args.timeout,
+            access_token=args.access_token,
         ).json()
 
-    entries = audit_entries(request_json(args.server, "GET", "/api/audit/recent").json())
+    entries = audit_entries(
+        request_json(args.server, "GET", "/api/audit/recent", access_token=args.access_token).json()
+    )
     require_audit_contains(entries, "diagnostic")
     require_audit_contains(entries, reject_approval_id)
     require_audit_contains(entries, approve_approval_id)
@@ -266,6 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-host", help="override SSH target host before running the flow")
     parser.add_argument("--ssh-user", help="override SSH target user before running the flow")
     parser.add_argument("--ssh-port", type=int, help="override SSH target port before running the flow")
+    parser.add_argument("--access-token", help="optional mobile web access token sent as an HTTP header")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout for command routes")
     return parser
 

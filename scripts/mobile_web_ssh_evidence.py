@@ -73,12 +73,24 @@ def planned_commands(args: argparse.Namespace) -> list[list[str]]:
     ]
     if args.auto_approve:
         flow.append("--auto-approve")
+    if args.access_token:
+        smoke.extend(["--access-token", args.access_token])
+        flow.extend(["--access-token", args.access_token])
     return [smoke, flow]
 
 
 def relative_command(command: list[str]) -> list[str]:
     display: list[str] = []
+    redact_next = False
     for item in command:
+        if redact_next:
+            display.append("<redacted>")
+            redact_next = False
+            continue
+        if item == "--access-token":
+            display.append(item)
+            redact_next = True
+            continue
         path = Path(item)
         try:
             display.append(str(path.relative_to(REPO_ROOT)))
@@ -283,6 +295,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-approve",
         action="store_true",
         help="pass --auto-approve to the flow simulator command",
+    )
+    parser.add_argument(
+        "--access-token",
+        help="optional mobile web access token passed to child simulator commands; redacted in logs",
     )
     parser.add_argument("--json", action="store_true", help="print machine-readable summary JSON")
     parser.add_argument("--dry-run", action="store_true", help="print planned paths and commands only")
