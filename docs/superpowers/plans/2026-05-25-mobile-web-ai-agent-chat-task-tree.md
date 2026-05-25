@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Upgrade the Linux mobile Web SSH control surface from a command console into an AI chat Agent that interprets natural language, proposes or runs remote Linux actions through SSH, gates risky actions behind approval, and returns assistant summaries.
+**Goal:** Upgrade the Linux mobile Web SSH control surface from a command console into an AI chat Agent that interprets natural language, uses the local DeepSeek config by default, proposes or runs remote Linux actions through SSH, gates risky actions behind approval, and returns assistant summaries.
 
-**Architecture:** Keep the existing LAN Web + Rust server + SSH runner foundation. Add a server-side Agent turn layer that accepts natural language, calls either a deterministic mock model or the DeepSeek chat completion API, maps model tool calls into the existing diagnostic/approval/SSH services, and broadcasts chat/tool/approval events over the current SSE stream. The Web UI makes chat the primary workflow and keeps raw shell commands as a secondary advanced tool.
+**Architecture:** Keep the existing LAN Web + Rust server + SSH runner foundation. Add a server-side Agent turn layer that accepts natural language, loads model settings from `~/.deepseek/config.toml` by default, calls either DeepSeek or a deterministic mock model, maps model tool calls into the existing diagnostic/approval/SSH services, and broadcasts chat/tool/approval events over the current SSE stream. The mobile Web UI must remain an iOS-browser-compatible thin client: no direct SSH, no local process APIs, no token storage, and no privileged execution in JavaScript.
 
 **Tech Stack:** Rust 1.88+, Axum, Tokio, Serde, `deepseek-mobile-agent-core`, DeepSeek OpenAI-compatible chat completions, system `ssh`, React/Vite mobile Web UI, Python smoke/evidence scripts.
 
@@ -31,8 +31,37 @@ User natural language
 - Do not claim real iOS/macOS/Windows evidence.
 - Do not modify `~/.deepseek/config.toml`; read it only.
 - Do not log or return DeepSeek API tokens.
+- Do not send DeepSeek API tokens to the browser.
 - Do not remove the raw command path; keep it as an advanced secondary control.
 - Do not implement always-approve.
+
+## Recorded Runtime Assumptions
+
+- The developer machine may have `~/.deepseek/config.toml` with a DeepSeek `api_key`, model, and base URL.
+- The Rust server should default to loading `~/.deepseek/config.toml` for convenient Linux/LAN Web testing.
+- The config file is server-private. The browser must never receive the API key or raw config contents.
+- Tests must use explicit temporary config files or mock models and must not depend on the real user config.
+- The target remote device for live Linux testing is `root@192.168.30.244:22`.
+
+## iOS Browser Compatibility Contract
+
+This Linux phase must be developed as if the Web UI is running inside Mobile Safari or an iOS WebView:
+
+- The browser can call the Rust server over HTTP and receive SSE events.
+- The browser cannot open raw SSH sockets, spawn processes, read local files, run native shell commands, access Keychain, or invoke platform package managers.
+- The browser must not store API keys. It may store non-secret UI preferences and the selected SSH target only if existing app behavior already does so.
+- All privileged work happens inside the Rust server:
+  - DeepSeek API calls.
+  - SSH command execution.
+  - approval policy.
+  - audit logging.
+  - secret redaction.
+- The Web UI must tolerate mobile browser behavior:
+  - SSE reconnects after background/foreground.
+  - duplicate form submissions are guarded by per-turn IDs or disabled pending state.
+  - touch-sized controls.
+  - no dependence on desktop keyboard shortcuts.
+- This phase still does not prove real iOS simulator/device behavior. It proves that the browser/server boundary is compatible with iOS restrictions.
 
 ## Shared Contract
 
@@ -137,6 +166,8 @@ Avoid parallel edits to the same file:
 - `mobile-web/src/App.tsx` should be owned by the Web UI task.
 - `scripts/mobile_web_ai_chat_smoke.py` should be owned by the script task.
 - `~/.deepseek/config.toml` must not be edited by any task.
+- No task may add browser-side DeepSeek API key fields, token prompts, or token persistence.
+- No task may add browser-side SSH execution. SSH remains server-side only.
 
 ---
 
@@ -174,7 +205,7 @@ shape tests. Return changed files and exact test output.
 
 ## Task 1: Read-Only DeepSeek Config Loader
 
-**Purpose:** Let the server discover model settings from `~/.deepseek/config.toml` without modifying or leaking it.
+**Purpose:** Let the server discover model settings from `~/.deepseek/config.toml` by default without modifying or leaking it.
 
 **Files:**
 - Create: `crates/mobile-web-server/src/model_config.rs`
@@ -190,6 +221,7 @@ shape tests. Return changed files and exact test output.
       pub base_url: String,
       pub model: String,
       pub api_key: Option<String>,
+      pub source: MobileModelConfigSource,
   }
   ```
 - [ ] Read config from an explicit path in tests and from `~/.deepseek/config.toml` in production.
@@ -197,10 +229,18 @@ shape tests. Return changed files and exact test output.
   - `api_key`
   - `model`
   - `base_url`
+  - provider names that mean DeepSeek or OpenAI-compatible DeepSeek
   - fallback model: `deepseek-v4-flash`
   - fallback base URL: `https://api.deepseek.com`
+- [ ] Add server CLI/env controls:
+  - `--model-mode auto|mock|deepseek`, default `auto`.
+  - `--model-config <path>`, default `~/.deepseek/config.toml`.
+  - `DEEPSEEK_MOBILE_MODEL_MODE` overrides `--model-mode` only when the CLI flag is absent.
+- [ ] In `auto` mode, use DeepSeek when a non-empty API key is present; otherwise use the mock model and report `model_mode: mock`.
+- [ ] In `deepseek` mode, return a clear startup or request error when no API key is present.
 - [ ] Add a redacted debug/status helper that reports `api_key_present: true/false` but never the value.
 - [ ] Tests must prove the config file is read-only and token values are not present in formatted output.
+- [ ] Tests must prove `auto` mode chooses DeepSeek when a temp config contains `api_key = "test-secret"` and mock when no key exists.
 - [ ] Run:
   ```bash
   cargo test -p deepseek-mobile-web-server model_config
@@ -213,14 +253,15 @@ shape tests. Return changed files and exact test output.
 **Subagent Prompt:**
 
 ```text
-Implement a read-only model config loader for mobile-web-server. It may read an
-explicit path in tests and ~/.deepseek/config.toml in production. Never write the
-file and never expose API token values in logs, JSON, Debug, or errors.
+Implement a read-only model config loader for mobile-web-server. The production
+default is ~/.deepseek/config.toml. Tests must use explicit temp config files.
+Never write the file and never expose API token values in logs, JSON, Debug,
+HTTP responses, or browser-visible events.
 ```
 
 ## Task 2: Agent Model Provider
 
-**Purpose:** Provide a model abstraction usable by route tests without network and by live runs with DeepSeek.
+**Purpose:** Provide a model abstraction usable by route tests without network and by live runs with DeepSeek loaded from the server-side config.
 
 **Files:**
 - Create: `crates/mobile-web-server/src/agent_model.rs`
@@ -239,11 +280,21 @@ file and never expose API token values in logs, JSON, Debug, or errors.
   - Disk questions produce `df -h`.
   - Identity/user questions produce `id`.
   - Unknown questions produce assistant text with no tool.
-- [ ] Implement a DeepSeek HTTP provider behind `--use-real-model`.
+- [ ] Implement a DeepSeek HTTP provider selected by `--model-mode deepseek` or `--model-mode auto` when config has an API key.
   - Use OpenAI-compatible `/chat/completions`.
   - Use function tools for `remote.shell.exec`.
   - Do not log API key.
   - Return clear error text if config has no API key.
+- [ ] The browser API must expose only redacted model status:
+  ```json
+  {
+    "model_mode": "deepseek",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "api_key_present": true
+  }
+  ```
+- [ ] The browser API must never expose `api_key`.
 - [ ] Tests use fake HTTP/model transport; live tests are not required.
 - [ ] Run:
   ```bash
@@ -260,7 +311,8 @@ file and never expose API token values in logs, JSON, Debug, or errors.
 ```text
 Implement the Agent model provider layer. Tests must not call the network.
 MockAgentModel should map natural-language OS/disk/user questions to tool calls.
-DeepSeek provider may be configured but must be tested with fake transport only.
+DeepSeek provider must read server-side config and must be tested with fake
+transport only. Do not add any browser-side API key handling.
 ```
 
 ## Task 3: Agent Turn Executor
@@ -269,6 +321,7 @@ DeepSeek provider may be configured but must be tested with fake transport only.
 
 **Files:**
 - Create: `crates/mobile-web-server/src/agent_chat.rs`
+- Create: `crates/mobile-web-server/src/agent_tool_policy.rs`
 - Modify: `crates/mobile-web-server/src/routes.rs`
 - Modify: `crates/mobile-web-server/src/lib.rs`
 - Test: `crates/mobile-web-server/tests/agent_chat.rs`
@@ -278,6 +331,9 @@ DeepSeek provider may be configured but must be tested with fake transport only.
 - [ ] Call `AgentModel`.
 - [ ] If the model proposes a known low-risk diagnostic command, execute through `DiagnosticService` or the shared `CommandRunner` with `requires_approval: false`.
 - [ ] If the model proposes any other shell command, create a pending approval through `ApprovalService`.
+- [ ] Add a server-side `AgentToolPolicy` that classifies tool calls. JavaScript must not make the security decision.
+- [ ] Reject model attempts to call unknown tools with an assistant-visible error and no SSH execution.
+- [ ] Ensure the raw user message is never passed to the shell unless it came back from the model as an approved `remote.shell.exec` command.
 - [ ] Broadcast assistant and tool events over SSE.
 - [ ] Return `AgentTurnResponse`.
 - [ ] Tests:
@@ -285,6 +341,8 @@ DeepSeek provider may be configured but must be tested with fake transport only.
   - `请查看磁盘空间` executes `df -h`.
   - high-risk command proposal creates pending approval and does not execute.
   - model text-only answer creates no tool call.
+  - unknown model tool creates no SSH execution.
+  - natural-language Chinese input is not present in any executed SSH command.
 - [ ] Run:
   ```bash
   cargo test -p deepseek-mobile-web-server agent_chat
@@ -299,7 +357,9 @@ DeepSeek provider may be configured but must be tested with fake transport only.
 ```text
 Implement POST /api/sessions/:id/agent-turn using the model abstraction and
 existing SSH/approval services. Natural-language OS questions must not be
-executed as shell text; they should become a low-risk diagnostic command.
+executed as shell text; they should become a low-risk diagnostic command. Keep
+all tool policy and SSH execution server-side so the Web UI remains compatible
+with iOS browser restrictions.
 ```
 
 ## Task 4: Approval Continuation Summary
@@ -352,6 +412,13 @@ clear assistant message saying nothing was executed.
 - [ ] Keep Diagnostics and Advanced Command available, but visually secondary.
 - [ ] When `agent-turn` returns pending approvals, render the same approval cards.
 - [ ] The text `请问当前运行在什么系统？` must be submitted to Agent chat, not the raw command field.
+- [ ] Do not add any UI field for the DeepSeek API key.
+- [ ] Do not add browser-side SSH libraries or raw TCP/WebSocket SSH clients.
+- [ ] Add mobile-browser interaction guards:
+  - disable the chat send button while the current turn is pending.
+  - keep the typed message in the input when the network request fails.
+  - reconnect SSE without losing already rendered timeline rows.
+  - make approval buttons at least 44 CSS pixels tall.
 - [ ] Run:
   ```bash
   cd mobile-web
@@ -368,7 +435,9 @@ clear assistant message saying nothing was executed.
 
 ```text
 Update the mobile Web UI so AI chat is the primary workflow. The raw command
-form must remain available but secondary. Add API/state tests for agent-turn.
+form must remain available but secondary. The UI must behave like an iOS browser
+thin client: no API key input, no SSH client implementation in JavaScript, and
+no privileged local APIs. Add API/state tests for agent-turn.
 ```
 
 ## Task 6: AI Chat Script and Evidence Coverage
@@ -391,7 +460,14 @@ form must remain available but secondary. Add API/state tests for agent-turn.
   - `--access-token`
   - `--message`
   - `--auto-approve`
+  - `--model-mode auto|mock|deepseek`
+  - `--model-config <path>`
   - `--json`
+- [ ] Add a live Linux script mode that starts or targets the Rust server with:
+  ```bash
+  make mobile-web-ai-server HOST=0.0.0.0 PORT=8788 SSH_HOST=192.168.30.244 SSH_USER=root SSH_PORT=22 MODEL_MODE=auto
+  ```
+- [ ] The live script must verify that the response to `请问当前运行在什么系统？` contains an assistant answer and does not contain `not found`.
 - [ ] Ensure script output does not print DeepSeek API keys.
 - [ ] Add evidence output rows that remain Linux/LAN Web evidence only.
 - [ ] Run:
@@ -408,8 +484,9 @@ form must remain available but secondary. Add API/state tests for agent-turn.
 
 ```text
 Add scriptable AI chat smoke/evidence coverage. It must prove natural language
-goes through agent-turn, not the raw command executor. Do not require a real
-DeepSeek API call in smoke tests.
+goes through agent-turn, not the raw command executor. Smoke tests must not
+require a real DeepSeek API call, but the live script path should support
+MODEL_MODE=auto and server-side loading of ~/.deepseek/config.toml.
 ```
 
 ## Task 7: Final Linux Verification and Docs
@@ -425,6 +502,18 @@ DeepSeek API call in smoke tests.
 - [ ] Add Make targets:
   - `make mobile-web-ai-smoke`
   - `make mobile-web-ai-server`
+- [ ] `make mobile-web-ai-server` defaults:
+  ```make
+  HOST ?= 0.0.0.0
+  PORT ?= 8788
+  SSH_HOST ?= 192.168.30.244
+  SSH_USER ?= root
+  SSH_PORT ?= 22
+  MODEL_MODE ?= auto
+  MODEL_CONFIG ?= $(HOME)/.deepseek/config.toml
+  ```
+- [ ] `make mobile-web-ai-smoke` uses mock mode by default for deterministic CI-style checks.
+- [ ] Add `make mobile-web-ai-live-smoke` for manual local testing with `MODEL_MODE=auto` against `root@192.168.30.244`.
 - [ ] Run full verification:
   ```bash
   python3 scripts/mobile_linux_validation.py
@@ -437,10 +526,11 @@ DeepSeek API call in smoke tests.
   cd mobile-web && PATH=/var/tmp/deepseek-mobile-web-node/node-v22.22.3-linux-x64/bin:$PATH npm run typecheck
   cd mobile-web && PATH=/var/tmp/deepseek-mobile-web-node/node-v22.22.3-linux-x64/bin:$PATH npm run build
   python3 scripts/mobile_web_ai_chat_smoke.py --server http://127.0.0.1:8788 --message "请问当前运行在什么系统？" --json
+  python3 scripts/mobile_web_ai_chat_smoke.py --server http://127.0.0.1:8788 --message "请问当前运行在什么系统？" --model-mode auto --json
   git diff --check -- docs crates/mobile-web-server scripts mobile-web Makefile Cargo.toml Cargo.lock
   ```
 - [ ] Run one live server against `root@192.168.30.244` and verify the answer is not `not found`.
-- [ ] Update docs to say the Linux Web simulator now proves AI chat -> SSH tool routing, not real iOS.
+- [ ] Update docs to say the Linux Web simulator now proves AI chat -> server-side DeepSeek/model -> server-side SSH tool routing under an iOS-compatible browser boundary, not real iOS.
 - [ ] Commit:
   ```bash
   git commit -m "docs: validate mobile web ai agent chat"
@@ -464,7 +554,7 @@ Dispatch these first:
 ```text
 Agent A: Task 0 - Agent chat contract
 Agent B: Task 1 - Read-only model config loader
-Agent C: Task 5 - Web chat UI skeleton using a mocked API contract
+Agent C: Task 5 - iOS-browser-compatible Web chat UI skeleton using a mocked API contract
 Agent D: Task 6 - AI chat script smoke skeleton using a fake server
 ```
 
@@ -481,8 +571,12 @@ Parent/Agent H: Task 7 - final integration and verification
 
 - The Web UI primary input is AI chat, not raw shell.
 - Typing `请问当前运行在什么系统？` produces an assistant answer and an SSH diagnostic/tool execution, not `ash: ... not found`.
+- By default, live local server testing loads model settings from server-side `~/.deepseek/config.toml` when available.
+- The browser never receives or stores the DeepSeek API key.
+- The browser never performs SSH or privileged execution directly.
 - High-risk model-proposed commands require `approve_once` or `reject`.
 - Approval replay remains rejected.
 - DeepSeek API tokens are read-only and never logged.
+- The implemented boundary is compatible with iOS browser limitations: HTTP/SSE only on the client, privileged execution only on the Rust server.
 - Linux verification passes.
 - Real iOS/macOS/Windows claims remain unchanged.
