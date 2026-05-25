@@ -1,14 +1,17 @@
 import { FormEvent, useEffect, useMemo, useReducer, useState } from "react";
 import {
   approveCommand,
+  buildEventUrl,
   createSession,
   getDiagnosticPresets,
   getHealth,
   getRecentAudit,
+  getStoredAccessToken,
   getSshTarget,
   prepareCommand,
   rejectCommand,
   runDiagnostic,
+  saveAccessToken,
   updateSshTarget
 } from "./api";
 import {
@@ -50,6 +53,8 @@ export default function App() {
   const [command, setCommand] = useState("");
   const [cwd, setCwd] = useState("");
   const [targetForm, setTargetForm] = useState({ host: "", user: "", port: "22" });
+  const [accessTokenInput, setAccessTokenInput] = useState(() => getStoredAccessToken());
+  const [accessToken, setAccessToken] = useState(() => getStoredAccessToken());
   const [diagnostics, setDiagnostics] = useState<DiagnosticPreset[]>(fallbackDiagnosticPresets);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +116,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accessToken]);
 
   useEffect(() => {
     const target = state.connection.target;
@@ -122,7 +127,7 @@ export default function App() {
 
   useEffect(() => {
     dispatch({ type: "sse", status: "connecting" });
-    const source = new EventSource("/event");
+    const source = new EventSource(buildEventUrl(accessToken));
     const eventTypes: ServerEvent["type"][] = [
       "session.updated",
       "message.updated",
@@ -158,7 +163,16 @@ export default function App() {
       source.close();
       dispatch({ type: "sse", status: "disconnected" });
     };
-  }, []);
+  }, [accessToken]);
+
+  function handleAccessTokenSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = accessTokenInput.trim();
+    saveAccessToken(token);
+    setAccessTokenInput(token);
+    setAccessToken(token);
+    setError(null);
+  }
 
   const targetLabel = useMemo(() => {
     const target = state.connection.target;
@@ -296,6 +310,24 @@ export default function App() {
           <StatusPill label="SSE" value={state.connection.sse} />
           <StatusPill label="Target" value={targetLabel} />
         </div>
+        <form className="access-token-form" onSubmit={handleAccessTokenSave}>
+          <label>
+            Access token
+            <input
+              autoCapitalize="none"
+              autoComplete="off"
+              autoCorrect="off"
+              onChange={(event) => setAccessTokenInput(event.target.value)}
+              placeholder="optional"
+              spellCheck={false}
+              type="password"
+              value={accessTokenInput}
+            />
+          </label>
+          <button className="secondary-button" type="submit">
+            Save token
+          </button>
+        </form>
         <form className="target-form" onSubmit={handleTargetSave}>
           <label>
             Host

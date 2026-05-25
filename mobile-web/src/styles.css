@@ -106,6 +106,18 @@ h2 {
   grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) 82px auto;
 }
 
+.access-token-form {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.access-token-form label {
+  color: #dce7ef;
+  min-width: 0;
+}
+
 .target-form label {
   color: #dce7ef;
   min-width: 0;
@@ -340,6 +352,7 @@ strong {
 
   .status-grid,
   .diagnostic-grid,
+  .access-token-form,
   .target-form {
     grid-template-columns: 1fr;
   }

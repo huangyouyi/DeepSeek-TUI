@@ -6,8 +6,8 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode, Uri, header},
     middleware,
     response::IntoResponse,
     routing::{get, post},
@@ -80,6 +80,11 @@ struct UpdateSshTargetRequest {
     user: Option<String>,
     port: Option<u16>,
     key_present: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventAccessTokenQuery {
+    access_token: Option<String>,
 }
 
 pub fn app_router(state: AppState, use_real_model: bool) -> Router {
@@ -192,7 +197,7 @@ async fn require_access_token(
     next: middleware::Next,
     access_token: AccessToken,
 ) -> impl IntoResponse {
-    if request_access_token_matches(&headers, &access_token) {
+    if request_access_token_matches(&headers, request.uri(), &access_token) {
         next.run(request).await
     } else {
         (
@@ -206,9 +211,14 @@ async fn require_access_token(
     }
 }
 
-fn request_access_token_matches(headers: &HeaderMap, access_token: &AccessToken) -> bool {
+fn request_access_token_matches(
+    headers: &HeaderMap,
+    uri: &Uri,
+    access_token: &AccessToken,
+) -> bool {
     bearer_token(headers).is_some_and(|candidate| access_token.matches(candidate))
         || mobile_web_token(headers).is_some_and(|candidate| access_token.matches(candidate))
+        || event_query_token(uri).is_some_and(|candidate| access_token.matches(&candidate))
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -221,6 +231,17 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 fn mobile_web_token(headers: &HeaderMap) -> Option<&str> {
     headers.get("X-Mobile-Web-Token")?.to_str().ok()
+}
+
+fn event_query_token(uri: &Uri) -> Option<String> {
+    if uri.path() != "/event" {
+        return None;
+    }
+
+    Query::<EventAccessTokenQuery>::try_from_uri(uri)
+        .ok()?
+        .0
+        .access_token
 }
 
 async fn health(State(state): State<RouterState>) -> Json<HealthResponse> {

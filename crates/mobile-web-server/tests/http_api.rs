@@ -313,12 +313,75 @@ async fn http_api_protected_event_rejects_missing_token() {
 }
 
 #[tokio::test]
+async fn http_api_protected_event_accepts_access_token_query() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/event?access_token=secret-token")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static("text/event-stream"))
+    );
+}
+
+#[tokio::test]
+async fn http_api_protected_event_rejects_wrong_access_token_query() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/event?access_token=wrong-token")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(response).await,
+        json!({
+            "code": "unauthorized",
+            "message": "missing or invalid mobile web access token"
+        })
+    );
+}
+
+#[tokio::test]
 async fn http_api_protected_json_api_rejects_wrong_token() {
     let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
         .oneshot(
             Request::builder()
                 .uri("/api/sessions")
                 .header(header::AUTHORIZATION, "Bearer wrong-token")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(response).await,
+        json!({
+            "code": "unauthorized",
+            "message": "missing or invalid mobile web access token"
+        })
+    );
+}
+
+#[tokio::test]
+async fn http_api_protected_json_api_rejects_access_token_query() {
+    let response = app_router_with_access_token(test_state(), false, "secret-token".to_string())
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions?access_token=secret-token")
                 .body(Body::empty())
                 .expect("request must build"),
         )

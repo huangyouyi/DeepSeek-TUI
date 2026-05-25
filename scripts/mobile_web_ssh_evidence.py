@@ -31,6 +31,7 @@ EVIDENCE_FILES = (
     "screenshots/.gitkeep",
     "failures/.gitkeep",
 )
+PLAN_DRAFT_FILE = "plan-update-draft.md"
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,11 @@ def destination_for(args: argparse.Namespace) -> Path:
     return args.output_root / f"{args.date}-mobile-web-ssh-{host_slug(args.host)}"
 
 
-def planned_paths(destination: Path) -> list[Path]:
-    return [destination / relative for relative in EVIDENCE_FILES]
+def planned_paths(destination: Path, write_plan_draft: bool = False) -> list[Path]:
+    paths = [destination / relative for relative in EVIDENCE_FILES]
+    if write_plan_draft:
+        paths.append(destination / PLAN_DRAFT_FILE)
+    return paths
 
 
 def planned_commands(args: argparse.Namespace) -> list[list[str]]:
@@ -214,19 +218,53 @@ def append_results(destination: Path, results: list[CommandResult]) -> None:
     write_text(destination / "results.md", "\n".join(lines))
 
 
+def write_plan_draft(destination: Path) -> CommandResult:
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "mobile_evidence_plan_draft.py"),
+        str(destination),
+    ]
+    result = run_command("mobile_evidence_plan_draft", command)
+    if result.returncode == 0:
+        write_text(destination / PLAN_DRAFT_FILE, result.stdout)
+    else:
+        write_text(
+            destination / PLAN_DRAFT_FILE,
+            "\n".join(
+                [
+                    "# Mobile Evidence Plan Update Draft",
+                    "",
+                    "Draft generation failed.",
+                    "",
+                    f"$ {' '.join(result.command)}",
+                    f"exit_code={result.returncode}",
+                    "",
+                    "stderr:",
+                    "",
+                    result.stderr.rstrip(),
+                    "",
+                ]
+            ),
+        )
+    return result
+
+
 def dry_run(args: argparse.Namespace, destination: Path) -> int:
-    paths = [str(path) for path in planned_paths(destination)]
+    paths = [str(path) for path in planned_paths(destination, args.write_plan_draft)]
     commands = [relative_command(command) for command in planned_commands(args)]
     if args.json:
+        payload = {
+            "status": "dry-run",
+            "boundary": BOUNDARY,
+            "destination": str(destination),
+            "planned_paths": paths,
+            "planned_commands": commands,
+        }
+        if args.write_plan_draft:
+            payload["plan_draft"] = str(destination / PLAN_DRAFT_FILE)
         print(
             json.dumps(
-                {
-                    "status": "dry-run",
-                    "boundary": BOUNDARY,
-                    "destination": str(destination),
-                    "planned_paths": paths,
-                    "planned_commands": commands,
-                },
+                payload,
                 sort_keys=True,
             )
         )
@@ -252,7 +290,12 @@ def live_run(args: argparse.Namespace, destination: Path) -> int:
     results = [run_command(name, command) for name, command in command_specs]
     append_command_log(destination, results)
     append_results(destination, results)
+    plan_draft_result = None
+    if args.write_plan_draft:
+        plan_draft_result = write_plan_draft(destination)
     failed = [result for result in results if result.returncode != 0]
+    if plan_draft_result and plan_draft_result.returncode != 0:
+        failed.append(plan_draft_result)
     status = "error" if failed else "ok"
     summary = {
         "status": status,
@@ -267,11 +310,20 @@ def live_run(args: argparse.Namespace, destination: Path) -> int:
             for result in results
         ],
     }
+    if args.write_plan_draft:
+        summary["plan_draft"] = str(destination / PLAN_DRAFT_FILE)
+        if plan_draft_result and plan_draft_result.returncode != 0:
+            summary["plan_draft_error"] = {
+                "returncode": plan_draft_result.returncode,
+                "stderr": plan_draft_result.stderr.rstrip(),
+            }
     if args.json:
         print(json.dumps(summary, sort_keys=True))
     else:
         print(BOUNDARY)
         print(f"Destination: {destination}")
+        if args.write_plan_draft:
+            print(f"Plan draft: {destination / PLAN_DRAFT_FILE}")
         for result in results:
             label = "ok" if result.returncode == 0 else "failed"
             print(f"{result.name}: {label} (exit {result.returncode})")
@@ -302,6 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="print machine-readable summary JSON")
     parser.add_argument("--dry-run", action="store_true", help="print planned paths and commands only")
+    parser.add_argument(
+        "--write-plan-draft",
+        action="store_true",
+        help=f"write {PLAN_DRAFT_FILE} inside the evidence destination",
+    )
     return parser
 
 

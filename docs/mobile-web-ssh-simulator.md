@@ -106,7 +106,8 @@ Create a Linux/LAN Web simulator evidence folder for a live server:
 python3 scripts/mobile_web_ssh_evidence.py \
   --server http://127.0.0.1:8788 \
   --host linux-lab-host \
-  --auto-approve
+  --auto-approve \
+  --write-plan-draft
 ```
 
 The helper writes a dated folder under `validation/mobile-web-ssh/` by default,
@@ -115,7 +116,11 @@ named like `YYYY-MM-DD-mobile-web-ssh-linux-lab-host/`. It creates `README.md`,
 `logs/`, `screenshots/`, and `failures/` placeholders. It then runs
 `scripts/mobile_web_ssh_smoke.py` and
 `scripts/mobile_web_ssh_flow_simulator.py` against `--server`, captures command
-output, and exits nonzero if either command fails.
+output, and exits nonzero if either command fails. With `--write-plan-draft`,
+it also runs `scripts/mobile_evidence_plan_draft.py` against the just-created
+bundle and writes `plan-update-draft.md` inside the evidence folder. The draft
+is attempted after `results.md` is written, so failed smoke or flow commands are
+still visible in both `commands.log` and the plan update draft.
 
 Preview the planned paths and commands without writing files:
 
@@ -124,9 +129,13 @@ python3 scripts/mobile_web_ssh_evidence.py \
   --server http://127.0.0.1:8788 \
   --host linux-lab-host \
   --date 2026-05-25 \
+  --write-plan-draft \
   --json \
   --dry-run
 ```
+
+When `--write-plan-draft` is present, dry-run JSON includes the planned
+`plan-update-draft.md` path without writing files.
 
 This evidence helper is Linux/LAN Web simulator evidence only. It is not iOS,
 macOS, Windows, or real mobile-platform evidence.

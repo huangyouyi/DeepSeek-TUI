@@ -16,17 +16,22 @@ import type {
 
 export type ApiContext = {
   fetch: typeof fetch;
+  accessToken?: string;
 };
 
 const defaultApi: ApiContext = {
   fetch: globalThis.fetch.bind(globalThis)
 };
 
+export const ACCESS_TOKEN_STORAGE_KEY = "deepseek.mobileWeb.accessToken";
+
 async function requestJson<T>(path: string, init: RequestInit = {}, api: ApiContext = defaultApi): Promise<T> {
+  const accessToken = resolveAccessToken(api);
   const response = await api.fetch(path, {
     ...init,
     headers: {
       ...(init.body ? { "content-type": "application/json" } : {}),
+      ...(accessToken ? { "X-Mobile-Web-Token": accessToken } : {}),
       ...init.headers
     }
   });
@@ -39,10 +44,56 @@ async function requestJson<T>(path: string, init: RequestInit = {}, api: ApiCont
     } catch {
       // Keep the HTTP status fallback.
     }
-    throw new Error(message);
+    throw new Error(redactAccessToken(message, accessToken));
   }
 
   return (await response.json()) as T;
+}
+
+export function buildEventUrl(accessToken = getStoredAccessToken()): string {
+  const token = normalizeAccessToken(accessToken);
+  if (!token) {
+    return "/event";
+  }
+
+  const params = new URLSearchParams({ access_token: token });
+  return `/event?${params.toString()}`;
+}
+
+export function getStoredAccessToken(): string {
+  try {
+    return globalThis.localStorage?.getItem(ACCESS_TOKEN_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveAccessToken(accessToken: string): void {
+  try {
+    const token = normalizeAccessToken(accessToken);
+    if (token) {
+      globalThis.localStorage?.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
+    } else {
+      globalThis.localStorage?.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function resolveAccessToken(api: ApiContext): string {
+  if (api.accessToken !== undefined) {
+    return normalizeAccessToken(api.accessToken);
+  }
+  return getStoredAccessToken();
+}
+
+function normalizeAccessToken(accessToken: string): string {
+  return accessToken.trim();
+}
+
+function redactAccessToken(message: string, accessToken: string): string {
+  return accessToken ? message.split(accessToken).join("[access token]") : message;
 }
 
 export function getHealth(api?: ApiContext): Promise<HealthResponse> {

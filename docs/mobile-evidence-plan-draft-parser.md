@@ -63,6 +63,13 @@ Parse a Linux/LAN mobile Web SSH simulator evidence bundle:
 python3 scripts/mobile_evidence_plan_draft.py validation/mobile-web-ssh/2026-05-25-mobile-web-ssh-linux-lab-host/
 ```
 
+For that simulator workflow, `scripts/mobile_web_ssh_evidence.py` with
+`--write-plan-draft` can run this parser automatically after writing
+`results.md` and store the output as `plan-update-draft.md` in the same
+bundle. The helper still writes the draft when the smoke or flow command fails,
+so the failure row can be copied into the mobile porting plan without a second
+manual command.
+
 `--source` is still accepted for compatibility, but the Source column is now
 included by default.
 

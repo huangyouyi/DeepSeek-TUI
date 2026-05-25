@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   approveCommand,
+  buildEventUrl,
   createSession,
   getDiagnosticPresets,
   listMessages,
@@ -84,5 +85,28 @@ describe("api client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/diagnostics/presets", {
       headers: {}
     });
+  });
+
+  it("adds an access token header when configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ status: "ok" }));
+    const api = {
+      fetch: fetchMock as unknown as typeof fetch,
+      accessToken: "phone-token"
+    };
+
+    await createSession(api);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
+      method: "POST",
+      headers: {
+        "X-Mobile-Web-Token": "phone-token"
+      }
+    });
+  });
+
+  it("adds an access token query parameter to the event stream URL when configured", () => {
+    expect(buildEventUrl("phone token")).toBe("/event?access_token=phone+token");
+    expect(buildEventUrl("")).toBe("/event");
+    expect(buildEventUrl("   ")).toBe("/event");
   });
 });
