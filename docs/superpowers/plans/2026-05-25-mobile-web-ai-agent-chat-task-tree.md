@@ -8,6 +8,25 @@
 
 **Tech Stack:** Rust 1.88+, Axum, Tokio, Serde, `deepseek-mobile-agent-core`, DeepSeek OpenAI-compatible chat completions, system `ssh`, React/Vite mobile Web UI, Python smoke/evidence scripts.
 
+## Current Status
+
+- [x] Task 0: Agent Chat API Contract
+- [x] Task 1: Read-Only DeepSeek Config Loader
+- [x] Task 2: Agent Model Provider
+- [x] Task 3: Agent Turn Executor
+- [x] Task 4: Approval Continuation Summary
+- [x] Task 5: Mobile Web Chat UI
+- [x] Task 6: AI Chat Script and Evidence Coverage
+- [x] Task 7: Final Linux Verification and Docs
+
+Manual Linux/LAN Web validation has confirmed the primary control chain:
+natural-language mobile Web chat creates approval-gated SSH work against
+`root@192.168.30.244`, approved commands execute server-side, and the Web UI
+shows a final assistant response beginning
+`本轮远程命令已全部执行完成。结果如下：`. This is Linux/LAN Web evidence only;
+it does not claim real iOS Safari/WebView, iOS app, local-network permission,
+Keychain, macOS/Xcode, Windows, or production runner evidence.
+
 ---
 
 ## Current Problem

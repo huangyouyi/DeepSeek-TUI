@@ -21,6 +21,10 @@ Linux-first includes:
   MCP scaffold, maintenance dry-run, and audit redaction.
 - Linux loopback simulation of the phone-to-computer flow.
 - Evidence bundle tooling and plan-update draft generation.
+- Linux/LAN Mobile Web AI Agent chat flow: a phone-shaped browser UI talks to a
+  Rust HTTP/SSE server, the server loads model configuration read-only, routes
+  model-proposed tools through server-side SSH policy, gates high-risk commands
+  behind approval, and returns assistant-visible command summaries.
 
 Linux-first excludes:
 
@@ -78,6 +82,7 @@ failure artifacts needed to review the platform behavior.
 | Mutating tool idempotency | Linux tests cover replay-safe binding for shell command leases, file write idempotency keys, package install dry-run idempotency, browser click approval metadata, and maintenance self-update/uninstall idempotency | Replay-safe protocol behavior across real network retries, duplicated mobile submissions, package/browser/maintenance side effects, and host restart recovery | `lan-runner`, `macos-host`, `windows-host`, `ios-device` | LF-F9, LF-I completion gate follow-up, S8, S9, T8, T9 |
 | Linux evidence bundle and plan draft | Simulator can write a dated Linux loopback evidence bundle into an explicit output root, and the parser consumes it into a reviewable plan draft | Manual maintainer acceptance before updating platform support claims; real platform claims still require their own evidence bundles | Linux loopback bundle under an explicit output root; downstream `macos-host`, `ios-simulator`, `ios-device`, `windows-host`, `lan-runner` bundles for real claims | LF-E5, LF-E6, LF-I6, S10, T10, U10, V10, W2 |
 | Linux mobile Web SSH simulator | LAN-accessible Rust HTTP/SSE server, phone-shaped Web UI scaffold, SSH target reachability check, preset SSH diagnostics, approval-gated advanced commands, scriptable smoke/flow checks, optional access-token redaction in helper/evidence output, and one-command evidence generation with `--write-plan-draft` | Real iOS WebView/Safari behavior, iOS local network permission prompt, generated Swift binding link, real runner pairing, production auth hardening, and production OS sandboxing | Linux/LAN Web simulator command output and generated plan draft; not a real-platform evidence bundle | Linux-only follow-up to LF-D/LF-F/LF-G; real claims still require `ios-device`, `ios-simulator`, `lan-runner`, `macos-host`, or `windows-host` bundles |
+| Linux mobile Web AI Agent chat | Natural-language chat from a phone-shaped Web UI, server-side DeepSeek/mock model routing, read-only `~/.deepseek/config.toml` loading, server-side SSH tool policy, low-risk diagnostic execution, high-risk approval creation, approved command execution, final assistant summary, copyable report output, and fake-runner/API tests for the approval continuation path | Real iOS Safari/WebView quirks, iOS local network permission prompt, native iOS app integration, production auth hardening, real model quality guarantees, and real LAN runner/device evidence | Linux/LAN Web AI chat manual output, Rust/React/Python tests, and optional Linux Web evidence bundle; not a real-platform evidence bundle | Linux-only AI control-chain follow-up to LF-D/LF-F/LF-G; real claims still require platform evidence bundles |
 
 ## Reserved Status Notes
 
@@ -87,6 +92,10 @@ failure artifacts needed to review the platform behavior.
   and `scripts/mobile_web_*` extends Linux/LAN development coverage. It proves
   the phone-shaped Web API, SSH diagnostic, approval, audit, and redaction flow
   on Linux only; it does not close any real iOS/macOS/Windows evidence item.
+  The AI chat extension additionally proves that natural-language requests can
+  travel through server-side model/tool routing, approval, SSH execution, and a
+  final assistant-visible result without giving the browser direct SSH,
+  process, local-file, or API-key access.
   Its final repeatable verification path is
   `scripts/mobile_web_ssh_evidence.py --auto-approve --write-plan-draft`
   against an already-running Rust server. The smoke path includes
@@ -124,6 +133,7 @@ be closed.
 | LF-M7 | Remote tool hardening | Idempotency, cancellation/timeout, streaming event model, and replay rejection are covered | done |
 | LF-M8 | Browser/installer scaffold proof | Browser open/extract/click approval and package install dry-run are covered by Linux smoke | partial |
 | LF-M9 | Ready-for-real-device handoff | Linux produces a checklist/evidence pack for macOS/iOS/Windows validation | partial |
+| LF-M10 | Mobile Web AI control chain | Phone-shaped Web chat drives server-side model/tool routing, approval-gated SSH execution, and final assistant summaries against a Linux host | done |
 
 ## Task Tree
 
@@ -205,6 +215,18 @@ Linux-First Mobile Agent Task Tree
 │  ├─ [partial] LF-H5. Real Windows host commands are documented but not executed
 │  └─ [done] LF-H6. Linux-to-real-device blocker mapping names each evidence bundle that must close the remaining hardware-blocked claims
 │
+├─ LF-J. Linux Mobile Web AI Agent chat
+│  ├─ [done] LF-J1. Add stable `POST /api/sessions/{id}/agent-turn` contract in Rust and TypeScript
+│  ├─ [done] LF-J2. Load DeepSeek model config read-only from server-side config without exposing API keys to the browser
+│  ├─ [done] LF-J3. Provide mock and DeepSeek-compatible model providers with fake-transport tests
+│  ├─ [done] LF-J4. Route natural-language chat through server-side tool policy so raw user text is not executed as shell
+│  ├─ [done] LF-J5. Execute low-risk diagnostic tool calls over SSH without approval and create approvals for high-risk commands
+│  ├─ [done] LF-J6. Continue approved Agent-originated commands into assistant-visible final summaries
+│  ├─ [done] LF-J7. Make AI chat the primary Web workflow while keeping Diagnostics and Advanced Command secondary
+│  ├─ [done] LF-J8. Add copyable report output for manual evidence sharing from mobile browsers
+│  ├─ [done] LF-J9. Add fake-runner/API and Web tests for chat, approval, final summary, redaction-safe status, and copyable report behavior
+│  └─ [done] LF-J10. Manually validate Web chat against `root@192.168.30.244` through approval and final assistant response; this is Linux/LAN Web evidence only
+│
 └─ LF-I. Completion gate before real-device phase
    ├─ [done] LF-I1. `python3 scripts/mobile_ios_flow_simulator.py --dry-run` contract evidence is covered by Linux cargo tests; this is not real iOS execution
    ├─ [done] LF-I2. `python3 scripts/mobile_ios_flow_simulator.py --use-loopback-runner --json` passes with targeted loopback cargo tests
@@ -237,8 +259,14 @@ python3 scripts/mobile_ios_flow_simulator.py --use-loopback-runner
 python3 scripts/mobile_linux_validation.py
 cargo fmt --all --check
 cargo test -p deepseek-mobile-agent-core -p kai-runner
+cargo test -p deepseek-mobile-web-server
 cargo clippy -p deepseek-mobile-agent-core -p kai-runner --all-targets --all-features
-git diff --check -- docs ios/DeepSeekMobileDemo crates/kai-runner crates/mobile-agent-core scripts Cargo.toml Cargo.lock
+cargo clippy -p deepseek-mobile-web-server --all-targets --all-features
+cd mobile-web && PATH=/var/tmp/deepseek-mobile-web-node/node-v22.22.3-linux-x64/bin:$PATH npm test
+cd mobile-web && PATH=/var/tmp/deepseek-mobile-web-node/node-v22.22.3-linux-x64/bin:$PATH npm run typecheck
+cd mobile-web && PATH=/var/tmp/deepseek-mobile-web-node/node-v22.22.3-linux-x64/bin:$PATH npm run build
+python3 scripts/mobile_web_ai_chat_smoke_test.py
+git diff --check -- docs ios/DeepSeekMobileDemo crates/kai-runner crates/mobile-agent-core crates/mobile-web-server mobile-web scripts Makefile Cargo.toml Cargo.lock
 ```
 
 After this gate passes, remaining claims must move to real macOS, iOS

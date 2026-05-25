@@ -2,7 +2,10 @@
 
 This Linux-only simulator serves a phone-oriented Web UI over LAN and lets it
 drive a Rust HTTP server that executes SSH commands against a disposable Linux
-test host.
+test host. The primary workflow is AI chat: the browser sends natural language
+to the Rust server, the server calls the configured model or deterministic mock,
+routes proposed tools through server-side policy, asks for approval when needed,
+and returns an assistant-visible final result after approved SSH execution.
 
 It is not iOS, macOS, Xcode, Windows, Keychain, local network permission, or
 real runner evidence. It proves the Linux/LAN Web control path only.
@@ -42,6 +45,15 @@ The server prints the bind URL, LAN URL, SSH target, and model mode. It does not
 print DeepSeek API tokens, SSH secrets, approval nonces, command leases, bearer
 tokens, or idempotency keys.
 
+For the usual build-and-run path:
+
+```bash
+make mobile-web-server
+```
+
+This builds `mobile-web/dist`, builds `deepseek-mobile-web-server`, binds to
+`0.0.0.0` by default, and loads `~/.deepseek/config.toml` read-only when present.
+
 ## Web UI
 
 The Web UI lives under `mobile-web/`. When Node/npm is available:
@@ -77,6 +89,11 @@ working_directory: pwd
 
 Advanced commands always create a pending approval first. The first stage
 supports `approve_once` and `reject`; it does not support `always approve`.
+
+AI-proposed high-risk shell commands use the same approval service. After the
+last approval in an Agent turn is handled, the server appends a final assistant
+message summarizing the approved command output, so the mobile Web UI shows a
+conversation result instead of only raw stdout/stderr.
 
 The production SSH runner invokes system `ssh` with `BatchMode=yes` and a short
 connect timeout so validation does not hang on password prompts.
@@ -205,8 +222,13 @@ diagnostics.
 Passing this simulator means:
 
 - A LAN-accessible Rust server can expose phone-shaped HTTP/SSE APIs.
+- A phone-shaped browser can use AI chat as the primary control surface without
+  direct SSH, local process, local file, or API-key access.
+- Server-side model/tool routing can turn natural language into SSH diagnostics
+  or approval-gated high-risk commands.
 - Preset diagnostics can execute through SSH against a Linux host.
 - Advanced commands are approval-gated before SSH execution.
+- Approved AI-proposed commands produce final assistant-visible summaries.
 - Audit output and script output are checked for token-like leaks.
 
 It does not mean:

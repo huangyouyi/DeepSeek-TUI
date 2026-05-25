@@ -153,6 +153,10 @@ assistant answer and no `not found` text. Use `--model-config <path>` only for
 an isolated test config; do not read or modify the real
 `~/.deepseek/config.toml` during validation. Add `--auto-approve` only when the
 run is intentionally validating the first pending high-risk approval path.
+When `--auto-approve` is used, the approval response and Web timeline should
+include a final assistant result such as
+`本轮远程命令已全部执行完成。结果如下：...`, not only raw stdout/stderr or an
+approval-complete placeholder.
 
 For the final repeatable Linux/Web/Rust/SSH control-chain verification, start
 the Rust server first, then run one evidence command:
@@ -177,6 +181,8 @@ Expected result:
 - A preset diagnostic executes over SSH.
 - An advanced command can be rejected without execution.
 - A second advanced command can be approved once and executed.
+- AI chat can request a high-risk remote Linux command, show pending approval,
+  execute after approval, and display a final assistant response.
 - Audit output does not expose known token-like sentinel fields.
 
 This does not prove SwiftUI, Xcode, iOS simulator/device, Keychain, iOS local
