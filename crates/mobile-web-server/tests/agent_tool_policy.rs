@@ -1,6 +1,7 @@
 use deepseek_mobile_agent_core::remote_schema::{RemoteToolCall, RemoteToolName};
-use deepseek_mobile_web_server::agent_tool_policy::{
-    AgentToolDecision, AgentToolPolicy, ShellCommand,
+use deepseek_mobile_web_server::{
+    agent_tool_policy::{AgentToolDecision, AgentToolPolicy, ShellCommand},
+    diagnostics::preset_diagnostics,
 };
 use serde_json::json;
 
@@ -23,6 +24,23 @@ fn agent_tool_policy_allows_known_read_only_diagnostic_commands() {
             cwd: None,
         })
     );
+}
+
+#[test]
+fn agent_tool_policy_allows_every_diagnostic_preset_command() {
+    for preset in preset_diagnostics() {
+        let decision = AgentToolPolicy.classify(&shell_call(&preset.command));
+
+        assert_eq!(
+            decision,
+            AgentToolDecision::RunLowRisk(ShellCommand {
+                command: preset.command,
+                cwd: None,
+            }),
+            "preset {} should be low risk",
+            preset.key
+        );
+    }
 }
 
 #[test]

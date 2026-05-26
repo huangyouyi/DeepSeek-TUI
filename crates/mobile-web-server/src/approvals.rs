@@ -10,6 +10,7 @@ use crate::ssh_exec::{CommandRunError, CommandRunner, SshCommandOutput};
 use crate::{
     AppState, ApprovalRespondRequest, ApprovalResponse, AuditEntry, CommandPrepareRequest, Message,
     MessagePart, PendingApproval,
+    types::{ToolPartData, text_part, tool_part},
 };
 
 #[derive(Clone, Debug)]
@@ -28,16 +29,23 @@ where
 
     pub fn prepare(&self, state: &AppState, request: CommandPrepareRequest) -> PendingApproval {
         let now = now_ms();
-        let approval = PendingApproval {
-            id: format!("approval-{}", Uuid::new_v4()),
-            session_id: request.session_id,
-            command: request.command,
-            cwd: request.cwd,
-            created_at_ms: now,
-            status: "pending".to_string(),
-        };
+        let approval = PendingApproval::remote_shell(
+            format!("approval-{}", Uuid::new_v4()),
+            request.session_id,
+            request.command,
+            request.cwd,
+            now,
+            "pending".to_string(),
+        );
         state.insert_pending_approval(approval.clone());
-        state.push_audit(approval_audit(&approval, "prepared", json!({})));
+        state.push_audit(approval_audit(
+            &approval,
+            "prepared",
+            "pending",
+            "once",
+            json!({}),
+            None,
+        ));
         broadcast_event(
             state,
             "approval.asked",
@@ -52,6 +60,7 @@ where
         approval_id: &str,
         request: ApprovalRespondRequest,
     ) -> Result<ApprovalResponse, ApprovalError> {
+        let normalized_response = normalize_approval_response(&request.response)?;
         let mut approval =
             state
                 .remove_pending_approval(approval_id)
@@ -59,29 +68,100 @@ where
                     approval_id: approval_id.to_string(),
                 })?;
 
-        match request.response.as_str() {
-            "reject" => {
+        match normalized_response {
+            ApprovalResponseAction::RejectStop => {
+                let stopped = approval
+                    .agent_turn_id()
+                    .map(|agent_turn_id| {
+                        state.remove_pending_approvals_for_agent_turn(&agent_turn_id)
+                    })
+                    .unwrap_or_default();
+                let stopped_count = stopped.len();
                 approval.status = "rejected".to_string();
                 append_agent_rejection_summary(state, &approval);
-                let _ = append_agent_turn_final_summary_if_complete(state, &approval);
-                state.push_audit(approval_audit(&approval, "rejected", json!({})));
+                for mut stopped_approval in stopped {
+                    stopped_approval.status = "stopped".to_string();
+                    append_agent_stopped_summary(state, &stopped_approval);
+                    broadcast_reply(state, &stopped_approval);
+                }
+                let fallback_summary = rejected_agent_summary(&approval.command);
+                let assistant_summary =
+                    append_agent_turn_stopped_summary_if_complete(state, &approval)
+                        .unwrap_or(fallback_summary);
+                let mut result = rejected_command_result(&approval.command, &assistant_summary);
+                result["stopped_count"] = json!(stopped_count);
+                state.push_audit(approval_audit(
+                    &approval,
+                    "rejected",
+                    "reject_stop",
+                    "once",
+                    result.clone(),
+                    Some(stopped_count),
+                ));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
                     approval,
                     status: "rejected".to_string(),
-                    result: json!({}),
+                    result,
                 })
             }
-            "approve_once" => {
-                let output = self.execute_approval(state, &approval)?;
+            ApprovalResponseAction::ApproveOnce | ApprovalResponseAction::ApproveSession => {
+                let approve_session =
+                    matches!(normalized_response, ApprovalResponseAction::ApproveSession);
+                let output = match self.execute_approval(state, &approval) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        if approve_session {
+                            state.grant_session_allow(
+                                &approval.session_id,
+                                &approval.command,
+                                approval.cwd.as_deref(),
+                            );
+                            state.push_audit(approval_audit(
+                                &approval,
+                                "approved",
+                                "approve_session",
+                                "session",
+                                json!({
+                                    "status": "failed",
+                                    "error": redact_text(&error.to_string()),
+                                }),
+                                None,
+                            ));
+                        }
+                        return Err(error);
+                    }
+                };
+                if approve_session {
+                    state.grant_session_allow(
+                        &approval.session_id,
+                        &approval.command,
+                        approval.cwd.as_deref(),
+                    );
+                }
                 let summary = approved_agent_summary(&approval.command, &output);
                 approval.status = "approved".to_string();
-                append_agent_approval_summary(state, &approval, summary);
+                append_agent_approval_summary(state, &approval, summary, &output);
                 let assistant_summary =
                     append_agent_turn_final_summary_if_complete(state, &approval)
                         .unwrap_or_else(|| approved_agent_summary(&approval.command, &output));
-                let result = command_result(&approval.command, &output, &assistant_summary);
-                state.push_audit(approval_audit(&approval, "approved", result.clone()));
+                let mut result = command_result(&approval.command, &output, &assistant_summary);
+                if approve_session {
+                    result["scope"] = json!("session");
+                }
+                let response = if approve_session {
+                    "approve_session"
+                } else {
+                    "approve_once"
+                };
+                state.push_audit(approval_audit(
+                    &approval,
+                    "approved",
+                    response,
+                    if approve_session { "session" } else { "once" },
+                    result.clone(),
+                    None,
+                ));
                 broadcast_reply(state, &approval);
                 Ok(ApprovalResponse {
                     approval,
@@ -89,9 +169,6 @@ where
                     result,
                 })
             }
-            other => Err(ApprovalError::UnsupportedResponse {
-                response: other.to_string(),
-            }),
         }
     }
 
@@ -167,6 +244,24 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApprovalResponseAction {
+    ApproveOnce,
+    ApproveSession,
+    RejectStop,
+}
+
+fn normalize_approval_response(response: &str) -> Result<ApprovalResponseAction, ApprovalError> {
+    match response {
+        "approve_once" => Ok(ApprovalResponseAction::ApproveOnce),
+        "approve_session" | "always" => Ok(ApprovalResponseAction::ApproveSession),
+        "reject_stop" | "reject" => Ok(ApprovalResponseAction::RejectStop),
+        other => Err(ApprovalError::UnsupportedResponse {
+            response: other.to_string(),
+        }),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ApprovalError {
     #[error("approval not found or already consumed: {approval_id}")]
@@ -189,27 +284,63 @@ fn broadcast_reply(state: &AppState, approval: &PendingApproval) {
     );
 }
 
-fn approval_audit(approval: &PendingApproval, action: &str, result: Value) -> AuditEntry {
+fn approval_audit(
+    approval: &PendingApproval,
+    action: &str,
+    response: &str,
+    scope: &str,
+    result: Value,
+    stopped_count: Option<usize>,
+) -> AuditEntry {
+    let mut metadata = json!({
+        "approval_id": approval.id,
+        "action": action,
+        "response": response,
+        "scope": scope,
+        "command": redact_text(&approval.command),
+        "cwd": approval.cwd.as_deref().map(redact_text),
+        "status": action,
+        "risk": {
+            "level": approval.risk_level(),
+            "reason": approval.risk_reason(),
+        },
+        "target": approval.target(),
+        "target_label": approval.target_label(),
+        "result": redact_value(&result),
+    });
+    if let Some(stopped_count) = stopped_count {
+        metadata["stopped_count"] = json!(stopped_count);
+    }
     AuditEntry {
         id: format!("audit-{}", Uuid::new_v4()),
         session_id: Some(approval.session_id.clone()),
         kind: format!("approval.{action}"),
         created_at_ms: now_ms(),
         summary: format!("approval {} {action}", approval.id),
-        metadata: json!({
-            "approval_id": approval.id,
-            "command": approval.command,
-            "status": action,
-            "result": redact_value(&result),
-        }),
+        metadata,
     }
 }
 
-fn append_agent_approval_summary(state: &AppState, approval: &PendingApproval, summary: String) {
+fn append_agent_approval_summary(
+    state: &AppState,
+    approval: &PendingApproval,
+    summary: String,
+    output: &SshCommandOutput,
+) {
     let Some(agent_turn_id) = approval.agent_turn_id() else {
         return;
     };
-    append_agent_summary_message(state, approval, agent_turn_id, summary);
+    append_agent_summary_message(
+        state,
+        approval,
+        agent_turn_id,
+        summary,
+        Some(approval_result_tool_part(
+            approval,
+            "completed",
+            Some(output),
+        )),
+    );
 }
 
 fn append_agent_rejection_summary(state: &AppState, approval: &PendingApproval) {
@@ -220,10 +351,21 @@ fn append_agent_rejection_summary(state: &AppState, approval: &PendingApproval) 
         state,
         approval,
         agent_turn_id,
-        format!(
-            "Rejected command `{}`; it was not executed.",
-            approval.command
-        ),
+        rejected_agent_summary(&approval.command),
+        Some(approval_result_tool_part(approval, "rejected", None)),
+    );
+}
+
+fn append_agent_stopped_summary(state: &AppState, approval: &PendingApproval) {
+    let Some(agent_turn_id) = approval.agent_turn_id() else {
+        return;
+    };
+    append_agent_summary_message(
+        state,
+        approval,
+        agent_turn_id,
+        stopped_agent_summary(&approval.command),
+        Some(approval_result_tool_part(approval, "stopped", None)),
     );
 }
 
@@ -232,22 +374,27 @@ fn append_agent_summary_message(
     approval: &PendingApproval,
     agent_turn_id: String,
     text: String,
+    tool_part: Option<MessagePart>,
 ) {
+    let mut parts = vec![text_part(
+        text,
+        json!({
+            "approval_id": approval.id,
+            "agent_turn_id": agent_turn_id,
+            "command": approval.command,
+        }),
+    )];
+    if let Some(tool_part) = tool_part
+        && !upsert_origin_tool_part(state, approval, &tool_part)
+    {
+        parts.push(tool_part);
+    }
     let message = Message {
         id: format!("message-{}", Uuid::new_v4()),
         session_id: approval.session_id.clone(),
         role: "assistant".to_string(),
         created_at_ms: now_ms(),
-        parts: vec![MessagePart {
-            id: format!("part-{}", Uuid::new_v4()),
-            kind: "text".to_string(),
-            text: Some(text),
-            data: json!({
-                "approval_id": approval.id,
-                "agent_turn_id": agent_turn_id,
-                "command": approval.command,
-            }),
-        }],
+        parts,
     };
     state.push_message(message.clone());
     broadcast_event(
@@ -255,11 +402,93 @@ fn append_agent_summary_message(
         "message.updated",
         serde_json::to_value(&message).expect("message must serialize"),
     );
+    for part in message.parts.iter().filter(|part| part.kind == "tool") {
+        broadcast_message_part_updated(state, &approval.session_id, &message.id, part);
+    }
+}
+
+fn upsert_origin_tool_part(
+    state: &AppState,
+    approval: &PendingApproval,
+    tool_part: &MessagePart,
+) -> bool {
+    let Some(message_id) = approval.agent_message_id() else {
+        return false;
+    };
+    if !state.upsert_message_part(&approval.session_id, &message_id, tool_part.clone()) {
+        return false;
+    }
+    broadcast_message_part_updated(state, &approval.session_id, &message_id, tool_part);
+    true
+}
+
+fn approval_result_tool_part(
+    approval: &PendingApproval,
+    status: &str,
+    output: Option<&SshCommandOutput>,
+) -> MessagePart {
+    let agent_turn_id = approval.agent_turn_id().unwrap_or_default();
+    let redacted_stdout = output.map(|output| redact_text(&output.stdout));
+    let redacted_stderr = output.map(|output| redact_text(&output.stderr));
+    let mut part = tool_part(ToolPartData {
+        turn_id: agent_turn_id.clone(),
+        agent_turn_id,
+        tool_call_id: format!("approval-call-{}", approval.id),
+        approval_id: Some(approval.id.clone()),
+        tool: "remote.shell.exec".to_string(),
+        title: "Remote shell command".to_string(),
+        status: status.to_string(),
+        requires_approval: true,
+        command: approval.command.clone(),
+        input: json!({ "command": approval.command }),
+        output: redacted_stdout.clone(),
+        stdout: redacted_stdout,
+        stderr: redacted_stderr,
+        exit_code: output.and_then(|output| output.exit_code),
+        duration_ms: output.map(|output| duration_ms(output.duration)),
+        timed_out: output.map(|output| output.timed_out),
+    });
+    part.id = approval
+        .agent_tool_part_id()
+        .unwrap_or_else(|| format!("part-tool-{}", Uuid::new_v4()));
+    part
+}
+
+fn broadcast_message_part_updated(
+    state: &AppState,
+    session_id: &str,
+    message_id: &str,
+    part: &MessagePart,
+) {
+    broadcast_event(
+        state,
+        "message.part.updated",
+        json!({
+            "session_id": session_id,
+            "message_id": message_id,
+            "part": part,
+        }),
+    );
 }
 
 fn append_agent_turn_final_summary_if_complete(
     state: &AppState,
     approval: &PendingApproval,
+) -> Option<String> {
+    append_agent_turn_terminal_summary_if_complete(state, approval, "completed")
+}
+
+fn append_agent_turn_stopped_summary_if_complete(
+    state: &AppState,
+    approval: &PendingApproval,
+) -> Option<String> {
+    append_agent_turn_terminal_summary_if_complete(state, approval, "stopped")
+}
+
+fn append_agent_turn_terminal_summary_if_complete(
+    state: &AppState,
+    approval: &PendingApproval,
+    status: &str,
 ) -> Option<String> {
     let agent_turn_id = approval.agent_turn_id()?;
     let has_remaining_turn_approvals = state
@@ -270,21 +499,20 @@ fn append_agent_turn_final_summary_if_complete(
         return None;
     }
 
-    let final_summary = final_agent_turn_summary(state, &approval.session_id, &agent_turn_id);
+    let final_summary =
+        terminal_agent_turn_summary(state, &approval.session_id, &agent_turn_id, status);
     let message = Message {
         id: format!("message-{}", Uuid::new_v4()),
         session_id: approval.session_id.clone(),
         role: "assistant".to_string(),
         created_at_ms: now_ms(),
-        parts: vec![MessagePart {
-            id: format!("part-{}", Uuid::new_v4()),
-            kind: "text".to_string(),
-            text: Some(final_summary.clone()),
-            data: json!({
+        parts: vec![text_part(
+            final_summary.clone(),
+            json!({
                 "agent_turn_id": agent_turn_id,
-                "status": "completed",
+                "status": status,
             }),
-        }],
+        )],
     };
     state.push_message(message.clone());
     broadcast_event(
@@ -298,13 +526,18 @@ fn append_agent_turn_final_summary_if_complete(
         json!({
             "session_id": approval.session_id,
             "turn_id": agent_turn_id,
-            "status": "completed",
+            "status": status,
         }),
     );
     Some(final_summary)
 }
 
-fn final_agent_turn_summary(state: &AppState, session_id: &str, agent_turn_id: &str) -> String {
+fn terminal_agent_turn_summary(
+    state: &AppState,
+    session_id: &str,
+    agent_turn_id: &str,
+    status: &str,
+) -> String {
     let summaries = state
         .messages(session_id)
         .into_iter()
@@ -321,10 +554,17 @@ fn final_agent_turn_summary(state: &AppState, session_id: &str, agent_turn_id: &
         .collect::<Vec<_>>();
 
     if summaries.is_empty() {
+        if status == "stopped" {
+            return "本轮已按用户要求停止，没有继续执行后续远程命令。".to_string();
+        }
         return "本轮远程命令已全部执行完成。".to_string();
     }
 
-    let mut text = "本轮远程命令已全部执行完成。结果如下：".to_string();
+    let mut text = if status == "stopped" {
+        "本轮已按用户要求停止，未继续执行后续远程命令。已记录结果如下：".to_string()
+    } else {
+        "本轮远程命令已全部执行完成。结果如下：".to_string()
+    };
     for (index, summary) in summaries.iter().enumerate() {
         text.push_str("\n\n");
         text.push_str(&(index + 1).to_string());
@@ -354,6 +594,14 @@ fn approved_agent_summary(command: &str, output: &SshCommandOutput) -> String {
     summary
 }
 
+fn rejected_agent_summary(command: &str) -> String {
+    format!("Rejected command `{command}`; it was not executed.")
+}
+
+fn stopped_agent_summary(command: &str) -> String {
+    format!("Stopped pending command `{command}`; it was not executed.")
+}
+
 fn command_result(command: &str, output: &SshCommandOutput, summary: &str) -> Value {
     json!({
         "command": command,
@@ -362,6 +610,15 @@ fn command_result(command: &str, output: &SshCommandOutput, summary: &str) -> Va
         "exit_code": output.exit_code,
         "duration_ms": duration_ms(output.duration),
         "timed_out": output.timed_out,
+        "summary": summary,
+        "assistant_text": summary,
+    })
+}
+
+fn rejected_command_result(command: &str, summary: &str) -> Value {
+    json!({
+        "command": command,
+        "status": "rejected",
         "summary": summary,
         "assistant_text": summary,
     })
@@ -401,6 +658,13 @@ fn redact_line(line: &str) -> String {
         {
             return format!("{}{}[REDACTED]", key, separator);
         }
+    }
+    let lower = line.to_ascii_lowercase();
+    if ["api_key", "apikey", "token", "secret", "bearer"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return "[REDACTED]".to_string();
     }
     line.to_string()
 }

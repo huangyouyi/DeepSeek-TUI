@@ -25,6 +25,12 @@ Linux-first includes:
   Rust HTTP/SSE server, the server loads model configuration read-only, routes
   model-proposed tools through server-side SSH policy, gates high-risk commands
   behind approval, and returns assistant-visible command summaries.
+- Linux/LAN Mobile Web server message/tool part contract: the Rust server owns
+  typed chat message parts for tool execution and approval continuation while
+  preserving the existing HTTP/SSE compatibility surface for test tooling.
+- Linux/LAN Mobile Web common-diagnostics chat coverage: fake smoke and Linux
+  tests cover natural-language DNS, Docker, OpenWrt/router, and log-summary
+  diagnostic requests through the server-owned agent/tool contract.
 
 Linux-first excludes:
 
@@ -36,6 +42,8 @@ Linux-first excludes:
 - Real macOS Homebrew/Xcode CLT host behavior.
 - Real Windows PowerShell/UAC/PATH/Event Log behavior.
 - Real browser automation engine behavior.
+- Real package install/update/uninstall execution.
+- Real Mobile Web browser automation evidence.
 
 ## Current Execution Wave
 
@@ -83,6 +91,13 @@ failure artifacts needed to review the platform behavior.
 | Linux evidence bundle and plan draft | Simulator can write a dated Linux loopback evidence bundle into an explicit output root, and the parser consumes it into a reviewable plan draft | Manual maintainer acceptance before updating platform support claims; real platform claims still require their own evidence bundles | Linux loopback bundle under an explicit output root; downstream `macos-host`, `ios-simulator`, `ios-device`, `windows-host`, `lan-runner` bundles for real claims | LF-E5, LF-E6, LF-I6, S10, T10, U10, V10, W2 |
 | Linux mobile Web SSH simulator | LAN-accessible Rust HTTP/SSE server, phone-shaped Web UI scaffold, SSH target reachability check, preset SSH diagnostics, approval-gated advanced commands, scriptable smoke/flow checks, optional access-token redaction in helper/evidence output, and one-command evidence generation with `--write-plan-draft` | Real iOS WebView/Safari behavior, iOS local network permission prompt, generated Swift binding link, real runner pairing, production auth hardening, and production OS sandboxing | Linux/LAN Web simulator command output and generated plan draft; not a real-platform evidence bundle | Linux-only follow-up to LF-D/LF-F/LF-G; real claims still require `ios-device`, `ios-simulator`, `lan-runner`, `macos-host`, or `windows-host` bundles |
 | Linux mobile Web AI Agent chat | Natural-language chat from a phone-shaped Web UI, server-side DeepSeek/mock model routing, read-only `~/.deepseek/config.toml` loading, server-side SSH tool policy, low-risk diagnostic execution, high-risk approval creation, approved command execution, final assistant summary, copyable report output, and fake-runner/API tests for the approval continuation path | Real iOS Safari/WebView quirks, iOS local network permission prompt, native iOS app integration, production auth hardening, real model quality guarantees, and real LAN runner/device evidence | Linux/LAN Web AI chat manual output, Rust/React/Python tests, and optional Linux Web evidence bundle; not a real-platform evidence bundle | Linux-only AI control-chain follow-up to LF-D/LF-F/LF-G; real claims still require platform evidence bundles |
+| Linux mobile Web server message/tool parts | Compatible server-owned typed message parts for text, remote shell tool lifecycle, pending approvals, approved/rejected tool results, final assistant summaries, and `message.part.updated` SSE events | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real package install/update/uninstall, real browser automation, and real macOS/Windows host evidence | Linux Web contract tests, React reducer/API tests, Python smoke tests, and optional LAN Web evidence output; not a real-platform evidence bundle | Linux-only productization follow-up after LF-J; real claims still require platform evidence bundles |
+| Linux mobile Web Chat product UI | Phone-friendly Chat-first UI with final answer prominence, copy final answer, Tool Activity rows, collapsed stdout/stderr, secondary diagnostics/advanced command/timeline/audit panels, and preserved server-owned approval/tool policy | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real browser automation, real package install/update/uninstall, and real macOS/Windows host evidence | Linux Web UI component/reducer tests, Vite build/typecheck, Python smoke compatibility tests, and optional LAN Web manual output; not a real-platform evidence bundle | Linux-only product UI follow-up after LF-K; real claims still require platform evidence bundles |
+| Linux mobile Web `/web` product and `/debug` split | `/web` serves a product Chat UI aligned with the reference project, `/debug` preserves the testing console, product settings expose SSH target/server status, and static deep links serve the SPA | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real browser automation, real package install/update/uninstall, and real macOS/Windows host evidence | Linux Web route/component tests, Rust static serving tests, Vite build/typecheck, Python smoke compatibility tests, and optional LAN Web manual output; not a real-platform evidence bundle | Linux-only product split follow-up after LF-L; real claims still require platform evidence bundles |
+| Linux mobile Web safe approval experience | Approval v2 contract planning, server-side exact command/cwd/session allow policy, `reject_stop` turn-stop semantics, enriched approval metadata/audit, `/web` three-option authorization card requirements, `/debug` compatibility, and fake-server Python smoke compatibility for response aliases | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real package install/update/uninstall, real browser automation, real macOS/Windows host evidence, and manual phone/LAN validation until user-run evidence is accepted | Linux Web contract/unit/smoke tests and task-tree documentation; fake-server smoke only, not a real-platform evidence bundle | Linux-only safe authorization follow-up after LF-M; high-risk commands still require approval unless an exact server-side session allow entry matches |
+| Linux mobile Web comfortable Chat + Tool Activity | Tool Activity product polish for advanced users: per-row status/title/exit/duration/approval metadata, Chinese status labels with raw status titles, collapsed stdout/stderr/output summaries, bounded long-output containers, and clearer empty state | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real browser automation, real package install/update/uninstall, real macOS/Windows host evidence, and manual phone/LAN validation until user-run evidence is accepted | Linux Web component tests and task-tree documentation; not a real-platform evidence bundle | Linux-only Phase 3 UI comfort follow-up after LF-N; manual LAN/phone checks remain pending/manual |
+| Linux mobile Web reliable multi-turn Agent | Phase 4 server-owned multi-turn contract planning and fake smoke coverage for `AgentTurnRequest.mode`, `retry_turn_id`, same-session continuation, retry body acceptance, and deterministic stopped summaries | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real DeepSeek quality guarantees, real browser automation, real package install/update/uninstall, real macOS/Windows host evidence, and manual phone/LAN validation until user-run evidence is accepted | Linux fake-server Python smoke tests and task-tree documentation; not a real-platform evidence bundle | Linux-only Phase 4 reliability follow-up after LF-O; manual LAN/phone checks remain pending/manual |
+| Linux mobile Web common diagnostics | Phase 5/LF-Q fake smoke and Linux-only docs cover natural-language DNS, Docker, OpenWrt/router, and log-summary diagnostic turns, with helper-side assertions for expected command and assistant summary text | Real iOS Safari/WebView rendering behavior, native iOS app integration, production auth hardening, real DeepSeek quality guarantees, real SSH execution, real browser automation, real package install/update/uninstall, real macOS/Windows host evidence, and manual LAN/phone validation until user-run evidence is accepted | Linux fake-server Python smoke tests and task-tree documentation; not a real-platform evidence bundle | Linux-only Phase 5 common-diagnostics follow-up after LF-P; manual LAN/phone checks remain pending/manual |
 
 ## Reserved Status Notes
 
@@ -134,6 +149,13 @@ be closed.
 | LF-M8 | Browser/installer scaffold proof | Browser open/extract/click approval and package install dry-run are covered by Linux smoke | partial |
 | LF-M9 | Ready-for-real-device handoff | Linux produces a checklist/evidence pack for macOS/iOS/Windows validation | partial |
 | LF-M10 | Mobile Web AI control chain | Phone-shaped Web chat drives server-side model/tool routing, approval-gated SSH execution, and final assistant summaries against a Linux host | done |
+| LF-M11 | Mobile Web product contract | Server-owned typed message/tool parts make session messages the source of truth for chat text, SSH tool lifecycle, approvals, approval results, and final assistant summaries while preserving legacy HTTP/SSE compatibility | done |
+| LF-M12 | Mobile Web Chat product UI | Chat is the first-class mobile experience, Tool Activity replaces raw timeline as the main execution view, final answers are prominent and copyable, and debug/testing panels remain available but secondary | done |
+| LF-M13 | Mobile Web `/web` product and `/debug` split | `/web` is the product Chat entry, `/debug` preserves the test console, product settings configure SSH target/server state, and static deep links work on the Rust server; phone/LAN validation remains manual | partial/manual |
+| LF-M14 | Mobile Web safe approval experience | Approval v2 is implemented around server-side exact command/cwd/session allow scope, high-risk allow misses still require approval, `reject_stop` stops the active turn, `/web` gets a three-option authorization card, `/debug` remains compatible, and manual LAN/phone validation remains pending | partial/manual |
+| LF-M15 | Mobile Web comfortable Chat + Tool Activity | Tool Activity is an advanced detail area with readable metadata, collapsed summarized output, bounded long-output containers, product status labels, and clear empty state; manual LAN/phone validation remains pending | partial/manual |
+| LF-M16 | Mobile Web reliable multi-turn Agent | Phase 4 covers server-owned continuation/retry/stop contracts, deterministic fallback expectations, fake smoke coverage, and explicit Linux-only evidence boundaries; manual LAN/phone validation remains pending | partial/manual |
+| LF-M17 | Mobile Web common diagnostics | Phase 5 covers common natural-language troubleshooting entries for DNS, Docker, OpenWrt/router, and logs through fake smoke and Linux-only docs; manual LAN/phone validation remains pending | partial/manual |
 
 ## Task Tree
 
@@ -226,6 +248,78 @@ Linux-First Mobile Agent Task Tree
 │  ├─ [done] LF-J8. Add copyable report output for manual evidence sharing from mobile browsers
 │  ├─ [done] LF-J9. Add fake-runner/API and Web tests for chat, approval, final summary, redaction-safe status, and copyable report behavior
 │  └─ [done] LF-J10. Manually validate Web chat against `root@192.168.30.244` through approval and final assistant response; this is Linux/LAN Web evidence only
+│
+├─ LF-K. Linux Mobile Web server message/tool part contract
+│  ├─ [done] LF-K0. Make the Rust server message-contract ready for a product Chat UI: session messages expose text answers, remote shell tool lifecycle, pending approvals, approved/rejected results, stdout/stderr, exit metadata, and final summaries through compatible typed parts; `message.part.updated` drives incremental Web updates; legacy HTTP/SSE fields remain compatible
+│  ├─ [done] LF-K1. Freeze a compatible typed-part schema that preserves `MessagePart { id, kind, text, data }`
+│  ├─ [done] LF-K2. Add `typed_message_parts` health capability and Rust/TypeScript contract tests
+│  ├─ [done] LF-K3. Persist low-risk remote shell tool lifecycle as assistant message `kind="tool"` parts
+│  ├─ [done] LF-K4. Persist pending approval, approved tool result, rejected tool result, and final summary parts
+│  ├─ [done] LF-K5. Emit `message.part.updated` SSE events while keeping legacy tool and approval events
+│  ├─ [done] LF-K6. Update Web reducer/API tests to consume typed tool parts without breaking existing timeline behavior
+│  ├─ [done] LF-K7. Update Python smoke helpers to accept typed parts while preserving legacy `assistant_text` fallback
+│  └─ [done] LF-K8. Run targeted Rust, React, Python, fmt, clippy, and diff-check validation; this remains Linux Web contract evidence only
+│
+├─ LF-L. Linux Mobile Web Chat product UI
+│  ├─ [done] LF-L0. Keep this product UI task tree and docs scoped to Linux/LAN Web evidence only
+│  ├─ [done] LF-L1. Add state selectors for Chat messages, latest final answer, Tool Activity rows, copy final answer report, and legacy timeline compatibility
+│  ├─ [done] LF-L2. Add ChatView and ToolActivity React components with collapsed stdout/stderr and no browser-side SSH/process/file/API-key behavior
+│  ├─ [done] LF-L3. Integrate the product layout into App: Chat first, pending approvals near chat, Tool Activity next, diagnostics/advanced command/timeline/audit as secondary panels
+│  ├─ [done] LF-L4. Add copy final answer while preserving copy full report and manual-copy textarea fallback
+│  ├─ [done] LF-L5. Add focused React/state tests for final answer, collapsed tool output, dedupe, and secondary timeline behavior
+│  └─ [done] LF-L6. Run Web tests, typecheck, build, Python smoke compatibility, fmt, and diff checks; manual `make` LAN testing remains user-run
+│
+├─ LF-M. Linux Mobile Web `/web` product and `/debug` split
+│  ├─ [done] M1.0. Entry route contract: `/web` is the formal product entry, `/debug` is the retained test/debug entry, `/` remains compatible, `/web` and `/debug` static deep links serve the SPA, and `/health`/`/event`/`/api/*` are preserved as server routes
+│  ├─ [done] M1.1. Product `/web` Chat shell: product chat is the first-use surface, showing user/assistant text, final answer, tool activity, and approvals from server-owned state
+│  ├─ [done] M1.2. Debug `/debug` preservation: Check SSH, Diagnostics, Advanced Command, raw Timeline, recent Audit, Copy report, and smoke-test compatibility remain available under `/debug`
+│  ├─ [done] M1.3. SSH target configuration: product settings expose SSH host/user/port, key/server status, and Check SSH through server APIs without exposing API keys or moving SSH policy client-side
+│  ├─ [done] M1.4. First remote diagnosis main path: chat supports natural-language diagnosis, server-side low-risk SSH diagnostics, approval-gated high-risk commands, assistant-visible command results, and copyable final report output
+│  ├─ [done] M1.5. Browser thin-client boundary: browser renders server state and sends intents only; the server owns model config, API keys, SSH execution, tool policy, approvals, audit, and message/tool persistence
+│  ├─ [done] M1.6. Static serving and API safety: Rust tests cover `/web`, `/web/...`, `/debug`, `/debug/...`, static assets, `/health`, `/api/sessions`, and missing API routes not falling back to `index.html`
+│  ├─ [done] M1.7. Explicit non-goals: approval v2, multi-round context expansion, real iOS/macOS/Windows evidence, real package install/update/uninstall, and real browser automation are outside this stage
+│  └─ [pending/manual] M1.8. Manual phone/LAN handoff: start the LAN server, open `/web` and `/debug` from a phone browser, configure/check SSH target, run first diagnosis, approve explicit high-risk work if created, and confirm final answer/report/debug fallback; this is not real platform evidence unless backed by a separate accepted bundle
+│
+├─ LF-N. Linux Mobile Web safe approval experience
+│  ├─ [done] S2.0. Goal and boundary: this phase is Linux/LAN Web approval contract and UX hardening only
+│  ├─ [done] S2.1. Backend approval v2 contract supports approve once, allow this session, reject, and reject/stop response semantics while preserving old aliases
+│  ├─ [done] S2.2. Server-side session allow policy stores exact command/cwd/session scope on the server; it is not a frontend local cache
+│  ├─ [done] S2.3. `reject_stop` marks the current agent turn stopped and prevents further tool execution for that turn
+│  ├─ [done] S2.4. Enriched approval metadata/audit includes risk reason, command, cwd, session/turn ids, response type, allow scope, and redacted result data
+│  ├─ [done] S2.5. `/web` renders a three-option authorization card for approve once, allow for this session, and reject/stop
+│  ├─ [done] S2.6. `/debug` keeps existing test entry compatibility for approve/reject flows and exposes new aliases without breaking scripts
+│  ├─ [done] S2.7. Contract/unit/smoke tests cover response aliases, exact session allow hit/miss, high-risk miss approval, reject/stop, `/web` card behavior, `/debug` compatibility, and Python fake-server smoke
+│  └─ [pending/manual] S2.8. Manual LAN/phone handoff remains user-run and must not be marked done without accepted evidence
+│
+├─ LF-O. Linux Mobile Web comfortable Chat + Tool Activity
+│  ├─ [done] S3.0. Goal and boundary: this phase is Linux/LAN Web Chat + Tool Activity comfort only, excluding real iOS/macOS/Windows evidence, real browser automation evidence, and real package install/update/uninstall evidence
+│  ├─ [done] S3.1. Tool Activity rows show status, command title/command, exit code, duration, and approval marker when present
+│  ├─ [done] S3.2. stdout, stderr, and output are collapsed by default with line-count and character-count summaries
+│  ├─ [done] S3.3. Long output renders inside bounded scrollable `pre.tool-activity__stream` containers
+│  ├─ [done] S3.4. Empty state explains that tool execution details appear in Tool Activity
+│  ├─ [done] S3.5. Component tests cover collapsed stdout/stderr, long output containment, status labels, and empty state
+│  ├─ [done] S3.6. Targeted Linux component verification is recorded in the Phase 3 task tree; broader fmt/diff checks remain command-gated by the worker
+│  ├─ [pending/manual] S3.7. Manual LAN/phone validation remains user-run and must not be marked done without accepted evidence
+│  └─ [pending/manual] S3.8. Acceptance boundary remains Linux Web only until separate real-platform evidence bundles are accepted
+│
+├─ LF-P. Linux Mobile Web reliable multi-turn Agent
+│  ├─ [done] S4.0. Goal and boundary: Phase 4 is Linux/LAN Web Agent reliability contract work only, excluding real iOS/macOS/Windows evidence, real browser automation evidence, and real package install/update/uninstall evidence
+│  ├─ [done] S4.1. `AgentTurnRequest` compatibility includes optional `mode` and `retry_turn_id` while legacy requests without those fields remain accepted
+│  ├─ [done] S4.2. Fake smoke coverage proves a same-session second turn with `mode=continue` can depend on the previous network-diagnosis turn without calling DeepSeek
+│  ├─ [done] S4.3. Fake smoke coverage accepts a `mode=retry` body with `retry_turn_id`
+│  ├─ [done] S4.4. Fake stop endpoint returns a deterministic stopped summary for the requested turn id
+│  ├─ [pending/manual] S4.5. Manual LAN/phone validation remains user-run and must not be marked done without accepted evidence
+│  └─ [pending/manual] S4.6. Acceptance boundary remains Linux Web only until separate real-platform evidence bundles are accepted
+│
+├─ LF-Q. Linux Mobile Web common diagnostics
+│  ├─ [done] S5.0. Goal and boundary: Phase 5 is Linux/LAN Web common troubleshooting diagnostics only, excluding real iOS/macOS/Windows evidence, real browser automation evidence, and real package install/update/uninstall evidence
+│  ├─ [done] S5.1. Fake smoke covers natural-language DNS diagnostics without calling DeepSeek or opening a real SSH connection
+│  ├─ [done] S5.2. Fake smoke covers natural-language Docker diagnostics without calling DeepSeek or opening a real SSH connection
+│  ├─ [done] S5.3. Fake smoke covers natural-language OpenWrt/router diagnostics without calling DeepSeek or opening a real SSH connection
+│  ├─ [done] S5.4. Fake smoke covers natural-language log-summary diagnostics without calling DeepSeek or opening a real SSH connection
+│  ├─ [done] S5.5. Smoke helper assertions can require exact expected command text and an assistant-summary substring for common diagnostic turns
+│  ├─ [pending/manual] S5.6. Manual LAN/phone validation remains user-run and must not be marked done without accepted evidence
+│  └─ [pending/manual] S5.7. Acceptance boundary remains Linux Web only until separate real-platform evidence bundles are accepted
 │
 └─ LF-I. Completion gate before real-device phase
    ├─ [done] LF-I1. `python3 scripts/mobile_ios_flow_simulator.py --dry-run` contract evidence is covered by Linux cargo tests; this is not real iOS execution

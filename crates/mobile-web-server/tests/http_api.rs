@@ -44,7 +44,8 @@ async fn health_returns_ok_contract() {
             "status": "ok",
             "service": "deepseek-mobile-web-server",
             "protocol": "mobile-web-v1",
-            "model": "mock"
+            "model": "mock",
+            "capabilities": ["typed_message_parts"]
         })
     );
 }
@@ -246,6 +247,42 @@ async fn http_api_diagnostic_presets_return_read_only_metadata() {
                 "key": "working_directory",
                 "label": "Working directory",
                 "command": "pwd",
+                "requires_approval": false
+            },
+            {
+                "key": "dns",
+                "label": "DNS",
+                "command": "getent hosts deepseek.com || nslookup deepseek.com || cat /etc/resolv.conf",
+                "requires_approval": false
+            },
+            {
+                "key": "cpu_memory",
+                "label": "CPU and memory",
+                "command": "uptime; free -m || cat /proc/meminfo; ps -eo pid,ppid,comm,%cpu,%mem --sort=-%cpu | head -20",
+                "requires_approval": false
+            },
+            {
+                "key": "services",
+                "label": "Service status",
+                "command": "systemctl list-units --type=service --state=running --no-pager || ps -eo pid,comm,args | head -50",
+                "requires_approval": false
+            },
+            {
+                "key": "docker",
+                "label": "Docker status",
+                "command": "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || docker info",
+                "requires_approval": false
+            },
+            {
+                "key": "openwrt_network",
+                "label": "OpenWrt/router network",
+                "command": "ubus call system board; ip route; ip addr; cat /etc/resolv.conf",
+                "requires_approval": false
+            },
+            {
+                "key": "logs",
+                "label": "Log summary",
+                "command": "journalctl -n 80 --no-pager || logread -l 80 || dmesg | tail -80",
                 "requires_approval": false
             }
         ])
@@ -451,7 +488,8 @@ async fn http_api_protected_health_remains_public() {
             "status": "ok",
             "service": "deepseek-mobile-web-server",
             "protocol": "mobile-web-v1",
-            "model": "mock"
+            "model": "mock",
+            "capabilities": ["typed_message_parts"]
         })
     );
 }

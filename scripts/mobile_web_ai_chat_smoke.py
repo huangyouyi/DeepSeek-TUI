@@ -137,11 +137,65 @@ def approval_summary(payload: Any) -> str | None:
     return None
 
 
+TOOL_PART_DATA_FIELDS = {
+    "tool",
+    "command",
+    "status",
+    "requires_approval",
+    "output",
+    "stdout",
+    "stderr",
+    "exit_code",
+    "duration_ms",
+    "timed_out",
+    "approval_id",
+    "agent_turn_id",
+}
+
+
+def normalize_tool_part(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") != "tool":
+        return None
+    data = value.get("data")
+    if not isinstance(data, dict):
+        return None
+    return {
+        "id": value.get("id") if isinstance(value.get("id"), str) else None,
+        "kind": "tool",
+        "data": {key: data[key] for key in TOOL_PART_DATA_FIELDS if key in data},
+    }
+
+
+def extract_tool_parts(payload: Any) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        tool_part = normalize_tool_part(value)
+        if tool_part is not None:
+            parts.append(tool_part)
+            return
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return parts
+
+
 def build_turn_payload(args: argparse.Namespace) -> dict[str, Any]:
     payload = {
         "message": args.message,
         "model_mode": args.model_mode,
     }
+    if args.mode:
+        payload["mode"] = args.mode
+    if args.retry_turn_id:
+        payload["retry_turn_id"] = args.retry_turn_id
     if args.model_config:
         payload["model_config_present"] = True
     return payload
@@ -152,6 +206,22 @@ def validate_assistant_answer(text: str) -> None:
         raise ScriptError("agent turn did not return assistant text")
     if "not found" in text.lower():
         raise ScriptError("agent turn assistant text contained not found")
+
+
+def validate_expectations(args: argparse.Namespace, answer: str, tool_parts: list[dict[str, Any]]) -> None:
+    if args.expect_assistant_contains and args.expect_assistant_contains not in answer:
+        raise ScriptError(
+            "agent turn assistant text did not contain expected text: "
+            f"{args.expect_assistant_contains}"
+        )
+    if args.expect_command:
+        commands = [
+            part["data"].get("command")
+            for part in tool_parts
+            if isinstance(part.get("data"), dict)
+        ]
+        if args.expect_command not in commands:
+            raise ScriptError(f"agent turn did not include expected command: {args.expect_command}")
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -181,8 +251,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     answer = assistant_text(turn)
     validate_assistant_answer(answer)
     approvals = pending_approvals(turn)
+    messages = request_json(
+        args.server,
+        "GET",
+        f"/api/sessions/{session_id}/messages",
+        timeout=args.timeout,
+        access_token=args.access_token,
+    ).json()
+
+    turn_tool_parts = extract_tool_parts({"turn": turn, "messages": messages})
+    validate_expectations(args, answer, turn_tool_parts)
 
     approval_response = None
+    approval_messages = None
     summary = None
     if args.auto_approve and approvals:
         approval_id = extract_approval_id(approvals[0])
@@ -190,14 +271,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             args.server,
             "POST",
             f"/api/approvals/{approval_id}/respond",
-            {"response": "approve_once"},
+            {"response": args.approval_response},
             timeout=args.timeout,
             access_token=args.access_token,
         ).json()
         summary = approval_summary(approval_response)
         if not summary:
             raise ScriptError("approval response did not include an assistant summary")
+        approval_messages = request_json(
+            args.server,
+            "GET",
+            f"/api/sessions/{session_id}/messages",
+            timeout=args.timeout,
+            access_token=args.access_token,
+        ).json()
 
+    approval_result = approval_response.get("result") if isinstance(approval_response, dict) else None
     result = {
         "status": "ok",
         "server": args.server,
@@ -209,9 +298,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "turn_id": turn.get("turn_id") if isinstance(turn, dict) else None,
             "status": turn.get("status") if isinstance(turn, dict) else None,
             "executed_tools": turn.get("executed_tools", []) if isinstance(turn, dict) else [],
+            "tool_parts": turn_tool_parts,
         },
         "pending_approvals": approvals,
         "approval_summary": summary,
+        "approval_tool_parts": extract_tool_parts({
+            "approval_result": approval_result,
+            "messages": approval_messages,
+        }),
     }
     assert_no_secret_text(result)
     if approval_response is not None:
@@ -238,10 +332,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--message", required=True, help="message to send to the remote Linux agent")
     parser.add_argument("--auto-approve", action="store_true", help="approve the first pending approval once")
     parser.add_argument(
+        "--approval-response",
+        choices=("approve_once", "approve_session", "reject", "reject_stop"),
+        default="approve_once",
+        help="approval response alias to send when --auto-approve is set",
+    )
+    parser.add_argument(
         "--model-mode",
         choices=("auto", "mock", "deepseek"),
         default="auto",
         help="model mode requested for the agent turn",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("normal", "continue", "retry"),
+        help="optional agent turn mode; omitted for legacy-compatible requests",
+    )
+    parser.add_argument("--retry-turn-id", help="optional turn id used with --mode retry")
+    parser.add_argument(
+        "--expect-command",
+        help="fail unless the turn or message tool parts include this exact command",
+    )
+    parser.add_argument(
+        "--expect-assistant-contains",
+        help="fail unless assistant text contains this exact substring",
     )
     parser.add_argument(
         "--model-config",

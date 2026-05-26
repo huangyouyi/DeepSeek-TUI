@@ -19,7 +19,7 @@ pub use state::AppState;
 pub use types::{
     ApiErrorBody, ApprovalRespondRequest, ApprovalResponse, AuditEntry, CommandPrepareRequest,
     DiagnosticPreset, DiagnosticRequest, DiagnosticResponse, HealthResponse, Message, MessagePart,
-    PendingApproval, ServerEvent, SessionSummary, SshTarget,
+    PendingApproval, ServerEvent, SessionSummary, SshTarget, ToolPartData, text_part, tool_part,
 };
 
 #[cfg(test)]
@@ -39,6 +39,7 @@ mod tests {
             service: "deepseek-mobile-web-server".to_string(),
             protocol: "mobile-web-v1".to_string(),
             model: "mock".to_string(),
+            capabilities: Vec::new(),
         })
         .expect("health response must serialize");
 

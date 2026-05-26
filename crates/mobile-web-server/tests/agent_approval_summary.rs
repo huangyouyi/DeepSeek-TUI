@@ -68,6 +68,16 @@ fn agent_approval(id: &str, command: &str) -> PendingApproval {
     .expect("agent approval must deserialize")
 }
 
+fn tool_part_data(state: &AppState, session_id: &str, status: &str) -> serde_json::Value {
+    state
+        .messages(session_id)
+        .into_iter()
+        .flat_map(|message| message.parts)
+        .find(|part| part.kind == "tool" && part.data["status"] == status)
+        .map(|part| part.data)
+        .unwrap_or_else(|| panic!("expected {status} tool part"))
+}
+
 #[test]
 fn agent_approval_summary_approve_once_appends_assistant_command_summary() {
     let state = test_state();
@@ -103,6 +113,20 @@ fn agent_approval_summary_approve_once_appends_assistant_command_summary() {
         response.result["summary"],
         "本轮远程命令已全部执行完成。结果如下：\n\n1. Approved command `uptime` completed with exit code 0.\nstdout:\nran uptime"
     );
+
+    let tool = tool_part_data(&state, "session-1", "completed");
+    assert_eq!(tool["approval_id"], "approval-1");
+    assert_eq!(tool["turn_id"], "turn-1");
+    assert_eq!(tool["agent_turn_id"], "turn-1");
+    assert_eq!(tool["tool"], "remote.shell.exec");
+    assert_eq!(tool["requires_approval"], true);
+    assert_eq!(tool["command"], "uptime");
+    assert_eq!(tool["output"], "ran uptime\n");
+    assert_eq!(tool["stdout"], "ran uptime\n");
+    assert_eq!(tool["stderr"], "");
+    assert_eq!(tool["exit_code"], 0);
+    assert_eq!(tool["duration_ms"], 12);
+    assert_eq!(tool["timed_out"], false);
 }
 
 #[test]
@@ -122,6 +146,14 @@ fn agent_approval_summary_reject_appends_assistant_not_executed_summary() {
         .expect("approval must reject cleanly");
 
     assert_eq!(response.status, "rejected");
+    assert_eq!(
+        response.result["summary"],
+        "本轮已按用户要求停止，未继续执行后续远程命令。已记录结果如下：\n\n1. Rejected command `systemctl restart ssh`; it was not executed."
+    );
+    assert_eq!(
+        response.result["assistant_text"],
+        "本轮已按用户要求停止，未继续执行后续远程命令。已记录结果如下：\n\n1. Rejected command `systemctl restart ssh`; it was not executed."
+    );
     assert!(runner.calls().is_empty());
     let messages = state.messages("session-1");
     assert_eq!(messages.len(), 2);
@@ -132,9 +164,17 @@ fn agent_approval_summary_reject_appends_assistant_not_executed_summary() {
     assert_eq!(
         messages[1].parts[0].text.as_deref(),
         Some(
-            "本轮远程命令已全部执行完成。结果如下：\n\n1. Rejected command `systemctl restart ssh`; it was not executed."
+            "本轮已按用户要求停止，未继续执行后续远程命令。已记录结果如下：\n\n1. Rejected command `systemctl restart ssh`; it was not executed."
         )
     );
+
+    let tool = tool_part_data(&state, "session-1", "rejected");
+    assert_eq!(tool["approval_id"], "approval-1");
+    assert_eq!(tool["turn_id"], "turn-1");
+    assert_eq!(tool["agent_turn_id"], "turn-1");
+    assert_eq!(tool["tool"], "remote.shell.exec");
+    assert_eq!(tool["requires_approval"], true);
+    assert_eq!(tool["command"], "systemctl restart ssh");
 }
 
 #[test]
@@ -214,4 +254,61 @@ fn agent_approval_summary_waits_for_all_same_turn_approvals_before_final_answer(
             "本轮远程命令已全部执行完成。结果如下：\n\n1. Approved command `uname -a` completed with exit code 0.\nstdout:\nran uname -a\n\n2. Approved command `df -h` completed with exit code 0.\nstdout:\nran df -h"
         )
     );
+}
+
+#[test]
+fn agent_approval_summary_reject_stop_stops_remaining_same_turn_approvals() {
+    let state = test_state();
+    let runner = FakeRunner::new();
+    let service = ApprovalService::new(runner.clone());
+    state.insert_pending_approval(agent_approval("approval-1", "opkg update"));
+    state.insert_pending_approval(agent_approval("approval-2", "systemctl restart ssh"));
+    state.insert_pending_approval(
+        serde_json::from_value(json!({
+            "id": "approval-other-turn",
+            "session_id": "session-1",
+            "command": "reboot",
+            "created_at_ms": 100,
+            "status": "pending",
+            "agent_turn_id": "turn-2"
+        }))
+        .expect("agent approval must deserialize"),
+    );
+
+    let response = service
+        .respond(
+            &state,
+            "approval-1",
+            serde_json::from_value(json!({"response": "reject_stop"}))
+                .expect("request must deserialize"),
+        )
+        .expect("approval must reject and stop cleanly");
+
+    assert_eq!(response.status, "rejected");
+    assert_eq!(response.result["stopped_count"], 1);
+    assert!(
+        response.result["assistant_text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("本轮已按用户要求停止")
+    );
+    assert!(runner.calls().is_empty());
+    let remaining = state.pending_approvals();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "approval-other-turn");
+
+    let messages = state.messages("session-1");
+    assert_eq!(messages.len(), 3);
+    let rejected_tool = tool_part_data(&state, "session-1", "rejected");
+    assert_eq!(rejected_tool["approval_id"], "approval-1");
+    let stopped_tool = tool_part_data(&state, "session-1", "stopped");
+    assert_eq!(stopped_tool["approval_id"], "approval-2");
+
+    let audit = state.audit_recent();
+    let last = audit.last().expect("audit entry");
+    assert_eq!(last.kind, "approval.rejected");
+    assert_eq!(last.metadata["response"], "reject_stop");
+    assert_eq!(last.metadata["stopped_count"], 1);
+    assert_eq!(last.metadata["risk"]["level"], "high");
+    assert_eq!(last.metadata["target"], "remote.shell.exec");
 }

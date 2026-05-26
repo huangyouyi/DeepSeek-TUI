@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, StatusCode, Uri, header},
     middleware,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, get_service, post},
 };
 use deepseek_mobile_agent_core::{
     remote_schema::{RemoteToolCall, RemoteToolName},
@@ -19,19 +19,24 @@ use deepseek_mobile_agent_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 use crate::{
     AppState, AuditEntry, CommandPrepareRequest, DiagnosticRequest, HealthResponse, Message,
     MessagePart, SessionSummary, SshTarget,
-    agent_model::{AgentModel, AgentModelRequest, AgentToolCall, MockAgentModel},
+    agent_model::{
+        AgentContextMessage, AgentModel, AgentModelRequest, AgentToolCall, MockAgentModel,
+    },
     agent_tool_policy::{AgentToolDecision, AgentToolPolicy},
     approvals::{ApprovalError, ApprovalService},
-    diagnostics::{DiagnosticError, DiagnosticService, preset_diagnostics},
+    diagnostics::{DiagnosticError, DiagnosticService, preset_command, preset_diagnostics},
     events::{broadcast_event, event_stream},
     ssh_exec::{CommandRunner, SshCommandOutput, SystemSshCommandRunner},
-    types::{AgentExecutedTool, AgentTurnRequest, AgentTurnResponse, SshCheckResponse},
+    types::{
+        AgentExecutedTool, AgentTurnRequest, AgentTurnResponse, SshCheckResponse, ToolPartData,
+        text_part, tool_part,
+    },
 };
 
 pub const SERVICE_NAME: &str = "deepseek-mobile-web-server";
@@ -152,6 +157,18 @@ pub fn app_router_with_config_and_model(
     app_router_inner(state, config, Arc::new(SystemSshCommandRunner), model, None)
 }
 
+pub fn app_router_with_config_runner_and_model<R>(
+    state: AppState,
+    config: MobileWebServerConfig,
+    runner: R,
+    model: Arc<dyn AgentModel>,
+) -> Router
+where
+    R: CommandRunner,
+{
+    app_router_inner(state, config, Arc::new(runner), model, None)
+}
+
 pub fn app_router_with_config_access_token_and_model(
     state: AppState,
     config: MobileWebServerConfig,
@@ -204,6 +221,10 @@ fn app_router_inner(
         .route("/api/sessions/{id}/messages", get(list_messages))
         .route("/api/sessions/{id}/prompt", post(prompt_session))
         .route("/api/sessions/{id}/agent-turn", post(agent_turn))
+        .route(
+            "/api/sessions/{id}/agent-turns/{turn_id}/stop",
+            post(stop_agent_turn),
+        )
         .route("/api/diagnostics/presets", get(list_diagnostic_presets))
         .route("/api/diagnostics/run", post(run_diagnostic))
         .route("/api/commands/prepare", post(prepare_command))
@@ -225,7 +246,13 @@ fn app_router_inner(
         .merge(protected_routes);
 
     let router = if let Some(static_dir) = config.static_dir {
-        router.fallback_service(ServeDir::new(static_dir))
+        let index = ServeFile::new(static_dir.join("index.html"));
+        router
+            .route_service("/web", get_service(index.clone()))
+            .route_service("/web/{*path}", get_service(index.clone()))
+            .route_service("/debug", get_service(index.clone()))
+            .route_service("/debug/{*path}", get_service(index))
+            .fallback_service(ServeDir::new(static_dir))
     } else {
         router
     };
@@ -293,6 +320,7 @@ async fn health(State(state): State<RouterState>) -> Json<HealthResponse> {
         service: SERVICE_NAME.to_string(),
         protocol: PROTOCOL.to_string(),
         model: model.model_mode,
+        capabilities: vec!["typed_message_parts".to_string()],
     })
 }
 
@@ -462,7 +490,8 @@ async fn agent_turn(
     Json(request): Json<AgentTurnRequest>,
 ) -> impl IntoResponse {
     let turn_id = format!("turn-{}", Uuid::new_v4());
-    let user_text = request.message.trim().to_string();
+    let context = build_agent_context(&state.app, &session_id);
+    let user_text = resolve_agent_turn_message(&state.app, &session_id, &request);
     let user_message = session_message(&session_id, "user", &user_text, json!({}));
     state.app.push_message(user_message.clone());
     broadcast_event(
@@ -482,10 +511,11 @@ async fn agent_turn(
     let model_response = match state.model.complete(&AgentModelRequest {
         session_id: session_id.clone(),
         message: user_text.clone(),
+        context: context.clone(),
     }) {
         Ok(response) => response,
         Err(error) => {
-            let assistant_text = format!("Agent model failed: {error}");
+            let assistant_text = deterministic_model_fallback(&context, &error.to_string());
             let assistant = session_message(
                 &session_id,
                 "assistant",
@@ -493,29 +523,55 @@ async fn agent_turn(
                 json!({ "turn_id": turn_id }),
             );
             state.app.push_message(assistant.clone());
+            state.app.push_audit(AuditEntry {
+                id: format!("audit-{}", Uuid::new_v4()),
+                session_id: Some(session_id.clone()),
+                kind: "agent.model_fallback".to_string(),
+                created_at_ms: now_ms(),
+                summary: "model failed; deterministic fallback returned".to_string(),
+                metadata: json!({
+                    "turn_id": turn_id,
+                    "error": redact_text(&error.to_string()),
+                    "context_items": context.len(),
+                }),
+            });
             broadcast_event(
                 &state.app,
                 "message.updated",
                 serde_json::to_value(&assistant).expect("message must serialize"),
             );
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(AgentTurnResponse {
-                    session_id,
-                    turn_id,
-                    status: "model_error".to_string(),
-                    assistant_text,
-                    executed_tools: Vec::new(),
-                    pending_approvals: Vec::new(),
+            broadcast_event(
+                &state.app,
+                "assistant.completed",
+                json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "status": "model_fallback",
                 }),
-            )
-                .into_response();
+            );
+            return Json(AgentTurnResponse {
+                session_id,
+                turn_id,
+                status: "model_fallback".to_string(),
+                assistant_text,
+                executed_tools: Vec::new(),
+                pending_approvals: Vec::new(),
+            })
+            .into_response();
         }
     };
 
     let policy = AgentToolPolicy;
     let approval_service = ApprovalService::new(state.runner.clone());
     let mut assistant_text = model_response.assistant_text;
+    let mut assistant = Message {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.clone(),
+        role: "assistant".to_string(),
+        created_at_ms: now_ms(),
+        parts: Vec::new(),
+    };
+    state.app.push_message(assistant.clone());
     let mut executed_tools = Vec::new();
     let mut pending_approvals = Vec::new();
     let mut rejected_tools = Vec::new();
@@ -528,9 +584,32 @@ async fn agent_turn(
                 continue;
             }
         };
+        let tool_call_id = remote_call.call_id.clone();
 
         match policy.classify(&remote_call) {
             AgentToolDecision::RunLowRisk(command) => {
+                let part_id = format!("part-tool-{}", Uuid::new_v4());
+                let running_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                    id: part_id.clone(),
+                    turn_id: turn_id.clone(),
+                    tool_call_id,
+                    command: command.command.clone(),
+                    status: "running",
+                    requires_approval: false,
+                    approval_id: None,
+                    output: None,
+                });
+                let _ =
+                    state
+                        .app
+                        .upsert_message_part(&session_id, &assistant.id, running_part.clone());
+                upsert_local_part(&mut assistant, running_part.clone());
+                broadcast_message_part_updated(
+                    &state.app,
+                    &session_id,
+                    &assistant.id,
+                    &running_part,
+                );
                 broadcast_event(
                     &state.app,
                     "agent.tool.proposed",
@@ -549,6 +628,31 @@ async fn agent_turn(
                         } else {
                             "completed"
                         };
+                        let completed_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                            id: part_id,
+                            turn_id: turn_id.clone(),
+                            tool_call_id: running_part.data["tool_call_id"]
+                                .as_str()
+                                .unwrap_or("agent-call-unknown")
+                                .to_string(),
+                            command: command.command.clone(),
+                            status,
+                            requires_approval: false,
+                            approval_id: None,
+                            output: Some(&output),
+                        });
+                        let _ = state.app.upsert_message_part(
+                            &session_id,
+                            &assistant.id,
+                            completed_part.clone(),
+                        );
+                        upsert_local_part(&mut assistant, completed_part.clone());
+                        broadcast_message_part_updated(
+                            &state.app,
+                            &session_id,
+                            &assistant.id,
+                            &completed_part,
+                        );
                         assistant_text = summarize_shell_output(&command.command, &output);
                         executed_tools.push(AgentExecutedTool {
                             tool: "remote.shell.exec".to_string(),
@@ -559,6 +663,31 @@ async fn agent_turn(
                         });
                     }
                     Err(error) => {
+                        let failed_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                            id: part_id,
+                            turn_id: turn_id.clone(),
+                            tool_call_id: running_part.data["tool_call_id"]
+                                .as_str()
+                                .unwrap_or("agent-call-unknown")
+                                .to_string(),
+                            command: command.command.clone(),
+                            status: "failed",
+                            requires_approval: false,
+                            approval_id: None,
+                            output: None,
+                        });
+                        let _ = state.app.upsert_message_part(
+                            &session_id,
+                            &assistant.id,
+                            failed_part.clone(),
+                        );
+                        upsert_local_part(&mut assistant, failed_part.clone());
+                        broadcast_message_part_updated(
+                            &state.app,
+                            &session_id,
+                            &assistant.id,
+                            &failed_part,
+                        );
                         assistant_text = format!("SSH command failed: {error}");
                         executed_tools.push(AgentExecutedTool {
                             tool: "remote.shell.exec".to_string(),
@@ -571,6 +700,128 @@ async fn agent_turn(
                 }
             }
             AgentToolDecision::RequireApproval(command) => {
+                if state.app.is_session_allowed(
+                    &session_id,
+                    &command.command,
+                    command.cwd.as_deref(),
+                ) {
+                    let part_id = format!("part-tool-{}", Uuid::new_v4());
+                    let running_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                        id: part_id.clone(),
+                        turn_id: turn_id.clone(),
+                        tool_call_id,
+                        command: command.command.clone(),
+                        status: "running",
+                        requires_approval: false,
+                        approval_id: None,
+                        output: None,
+                    });
+                    let _ = state.app.upsert_message_part(
+                        &session_id,
+                        &assistant.id,
+                        running_part.clone(),
+                    );
+                    upsert_local_part(&mut assistant, running_part.clone());
+                    broadcast_message_part_updated(
+                        &state.app,
+                        &session_id,
+                        &assistant.id,
+                        &running_part,
+                    );
+                    match run_agent_shell_command_with_policy(
+                        &state,
+                        &session_id,
+                        &turn_id,
+                        &command.command,
+                        command.cwd.as_deref(),
+                        RiskAssessment::high("server-side session approval grant"),
+                        false,
+                    ) {
+                        Ok(output) => {
+                            let status = if output.timed_out {
+                                "timed_out"
+                            } else {
+                                "completed"
+                            };
+                            let completed_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                                id: part_id,
+                                turn_id: turn_id.clone(),
+                                tool_call_id: running_part.data["tool_call_id"]
+                                    .as_str()
+                                    .unwrap_or("agent-call-unknown")
+                                    .to_string(),
+                                command: command.command.clone(),
+                                status,
+                                requires_approval: false,
+                                approval_id: None,
+                                output: Some(&output),
+                            });
+                            let _ = state.app.upsert_message_part(
+                                &session_id,
+                                &assistant.id,
+                                completed_part.clone(),
+                            );
+                            upsert_local_part(&mut assistant, completed_part.clone());
+                            broadcast_message_part_updated(
+                                &state.app,
+                                &session_id,
+                                &assistant.id,
+                                &completed_part,
+                            );
+                            assistant_text = summarize_shell_output(&command.command, &output);
+                            executed_tools.push(AgentExecutedTool {
+                                tool: "remote.shell.exec".to_string(),
+                                command: command.command.clone(),
+                                requires_approval: false,
+                                exit_code: output.exit_code,
+                                status: status.to_string(),
+                            });
+                            state.app.push_audit(agent_session_allow_audit(
+                                &session_id,
+                                &turn_id,
+                                &command.command,
+                                command.cwd.as_deref(),
+                                &output,
+                            ));
+                        }
+                        Err(error) => {
+                            let failed_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                                id: part_id,
+                                turn_id: turn_id.clone(),
+                                tool_call_id: running_part.data["tool_call_id"]
+                                    .as_str()
+                                    .unwrap_or("agent-call-unknown")
+                                    .to_string(),
+                                command: command.command.clone(),
+                                status: "failed",
+                                requires_approval: false,
+                                approval_id: None,
+                                output: None,
+                            });
+                            let _ = state.app.upsert_message_part(
+                                &session_id,
+                                &assistant.id,
+                                failed_part.clone(),
+                            );
+                            upsert_local_part(&mut assistant, failed_part.clone());
+                            broadcast_message_part_updated(
+                                &state.app,
+                                &session_id,
+                                &assistant.id,
+                                &failed_part,
+                            );
+                            assistant_text = format!("SSH command failed: {error}");
+                            executed_tools.push(AgentExecutedTool {
+                                tool: "remote.shell.exec".to_string(),
+                                command: command.command.clone(),
+                                requires_approval: false,
+                                exit_code: None,
+                                status: "failed".to_string(),
+                            });
+                        }
+                    }
+                    continue;
+                }
                 let approval = approval_service.prepare(
                     &state.app,
                     CommandPrepareRequest {
@@ -580,6 +831,28 @@ async fn agent_turn(
                     },
                 );
                 approval.set_agent_turn_id(turn_id.clone());
+                let pending_part = remote_shell_tool_part(RemoteShellToolPartInput {
+                    id: format!("part-tool-{}", Uuid::new_v4()),
+                    turn_id: turn_id.clone(),
+                    tool_call_id,
+                    command: approval.command.clone(),
+                    status: "pending_approval",
+                    requires_approval: true,
+                    approval_id: Some(approval.id.clone()),
+                    output: None,
+                });
+                approval.set_agent_tool_part(assistant.id.clone(), pending_part.id.clone());
+                let _ =
+                    state
+                        .app
+                        .upsert_message_part(&session_id, &assistant.id, pending_part.clone());
+                upsert_local_part(&mut assistant, pending_part.clone());
+                broadcast_message_part_updated(
+                    &state.app,
+                    &session_id,
+                    &assistant.id,
+                    &pending_part,
+                );
                 pending_approvals.push(approval);
                 assistant_text =
                     "I need approval before running the requested command.".to_string();
@@ -603,13 +876,11 @@ async fn agent_turn(
         "completed"
     }
     .to_string();
-    let assistant = session_message(
-        &session_id,
-        "assistant",
-        &assistant_text,
-        json!({ "turn_id": turn_id }),
-    );
-    state.app.push_message(assistant.clone());
+    let text = text_part(&assistant_text, json!({ "turn_id": turn_id }));
+    let _ = state
+        .app
+        .push_message_part(&session_id, &assistant.id, text.clone());
+    assistant.parts.push(text);
     broadcast_event(
         &state.app,
         "message.updated",
@@ -641,6 +912,67 @@ async fn list_messages(
     Path(session_id): Path<String>,
 ) -> Json<Vec<Message>> {
     Json(state.app.messages(&session_id))
+}
+
+async fn stop_agent_turn(
+    State(state): State<RouterState>,
+    Path((session_id, turn_id)): Path<(String, String)>,
+) -> Json<AgentTurnResponse> {
+    let stopped = state.app.remove_pending_approvals_for_agent_turn(&turn_id);
+    let assistant_text = if stopped.is_empty() {
+        "已请求停止本轮任务。当前没有等待授权的命令；如果命令已经开始执行，服务器会等待该命令自行结束或超时。".to_string()
+    } else {
+        format!(
+            "已停止本轮任务，{} 个等待授权的命令不会继续执行。",
+            stopped.len()
+        )
+    };
+    let assistant = session_message(
+        &session_id,
+        "assistant",
+        &assistant_text,
+        json!({
+            "turn_id": turn_id,
+            "status": "stopped",
+            "stopped_pending_approvals": stopped.len(),
+        }),
+    );
+    state.app.push_message(assistant.clone());
+    state.app.push_audit(AuditEntry {
+        id: format!("audit-{}", Uuid::new_v4()),
+        session_id: Some(session_id.clone()),
+        kind: "agent.turn_stopped".to_string(),
+        created_at_ms: now_ms(),
+        summary: "agent turn stopped by user".to_string(),
+        metadata: json!({
+            "turn_id": turn_id,
+            "stopped_pending_approvals": stopped.len(),
+            "note": "stop removes pending approvals; it does not claim to kill an already running OS process"
+        }),
+    });
+    broadcast_event(
+        &state.app,
+        "message.updated",
+        serde_json::to_value(&assistant).expect("message must serialize"),
+    );
+    broadcast_event(
+        &state.app,
+        "assistant.completed",
+        json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "status": "stopped",
+        }),
+    );
+
+    Json(AgentTurnResponse {
+        session_id,
+        turn_id,
+        status: "stopped".to_string(),
+        assistant_text,
+        executed_tools: Vec::new(),
+        pending_approvals: Vec::new(),
+    })
 }
 
 async fn list_audit(State(state): State<RouterState>) -> Json<Vec<AuditEntry>> {
@@ -730,7 +1062,7 @@ async fn respond_approval(
             StatusCode::BAD_GATEWAY,
             Json(json!({
                 "code": "ssh_failed",
-                "message": source.to_string()
+                "message": redact_text(&source.to_string())
             })),
         )
             .into_response(),
@@ -771,13 +1103,257 @@ fn session_message(session_id: &str, role: &str, text: &str, data: serde_json::V
         session_id: session_id.to_string(),
         role: role.to_string(),
         created_at_ms: now_ms(),
-        parts: vec![MessagePart {
-            id: Uuid::new_v4().to_string(),
-            kind: "text".to_string(),
-            text: Some(text.to_string()),
-            data,
-        }],
+        parts: vec![text_part(text, data)],
     }
+}
+
+fn resolve_agent_turn_message(
+    state: &AppState,
+    session_id: &str,
+    request: &AgentTurnRequest,
+) -> String {
+    let message = request.message.trim();
+    if !message.is_empty() {
+        return message.to_string();
+    }
+
+    if request.mode.as_deref() == Some("retry")
+        && let Some(retry_turn_id) = request.retry_turn_id.as_deref()
+        && let Some(text) = user_message_for_turn(state, session_id, retry_turn_id)
+    {
+        return text;
+    }
+
+    match request.mode.as_deref() {
+        Some("retry") => {
+            last_user_message(state, session_id).unwrap_or_else(|| "请重试上一轮请求。".to_string())
+        }
+        Some("continue") => "继续分析上一轮结果。".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn user_message_for_turn(state: &AppState, session_id: &str, turn_id: &str) -> Option<String> {
+    let messages = state.messages(session_id);
+    let turn_index = messages.iter().position(|message| {
+        message.role == "assistant"
+            && message.parts.iter().any(|part| {
+                part.data.get("turn_id").and_then(serde_json::Value::as_str) == Some(turn_id)
+                    || (part.kind == "tool"
+                        && part
+                            .data
+                            .get("agent_turn_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(turn_id))
+            })
+    })?;
+    messages[..turn_index]
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .and_then(message_text)
+}
+
+fn last_user_message(state: &AppState, session_id: &str) -> Option<String> {
+    state
+        .messages(session_id)
+        .into_iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .and_then(|message| message_text(&message))
+}
+
+fn build_agent_context(state: &AppState, session_id: &str) -> Vec<AgentContextMessage> {
+    const MAX_CONTEXT_ITEMS: usize = 10;
+    state
+        .messages(session_id)
+        .into_iter()
+        .flat_map(context_items_from_message)
+        .rev()
+        .take(MAX_CONTEXT_ITEMS)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn context_items_from_message(message: Message) -> Vec<AgentContextMessage> {
+    let mut items = Vec::new();
+    for part in message.parts {
+        if part.kind == "text" {
+            if let Some(text) = part.text.map(|text| compact_context_text("message", &text))
+                && !text.is_empty()
+            {
+                items.push(AgentContextMessage {
+                    role: context_role(&message.role),
+                    content: text,
+                });
+            }
+            continue;
+        }
+
+        if part.kind == "tool"
+            && let Ok(data) = serde_json::from_value::<ToolPartData>(part.data)
+        {
+            items.push(AgentContextMessage {
+                role: "assistant".to_string(),
+                content: compact_tool_context(&data),
+            });
+        }
+    }
+    items
+}
+
+fn message_text(message: &Message) -> Option<String> {
+    message
+        .parts
+        .iter()
+        .filter(|part| part.kind == "text")
+        .filter_map(|part| part.text.as_deref())
+        .map(str::trim)
+        .find(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn context_role(role: &str) -> String {
+    match role {
+        "user" => "user".to_string(),
+        _ => "assistant".to_string(),
+    }
+}
+
+fn compact_tool_context(data: &ToolPartData) -> String {
+    let mut lines = vec![format!(
+        "Tool remote.shell.exec `{}` status {}.",
+        data.command, data.status
+    )];
+    if let Some(exit_code) = data.exit_code {
+        lines.push(format!("exit_code: {exit_code}"));
+    }
+    if let Some(stdout) = data.stdout.as_deref().filter(|text| !text.is_empty()) {
+        lines.push(compact_context_text("stdout", stdout));
+    }
+    if let Some(stderr) = data.stderr.as_deref().filter(|text| !text.is_empty()) {
+        lines.push(compact_context_text("stderr", stderr));
+    }
+    lines.join("\n")
+}
+
+fn compact_context_text(label: &str, text: &str) -> String {
+    const MAX_INLINE_CHARS: usize = 700;
+    const EDGE_CHARS: usize = 240;
+    let clean = text.trim();
+    if clean.is_empty() {
+        return String::new();
+    }
+    let line_count = clean.lines().count().max(1);
+    let char_count = clean.chars().count();
+    if char_count <= MAX_INLINE_CHARS {
+        return format!("{label} ({line_count} lines, {char_count} chars):\n{clean}");
+    }
+
+    let head = clean.chars().take(EDGE_CHARS).collect::<String>();
+    let tail = clean
+        .chars()
+        .rev()
+        .take(EDGE_CHARS)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!(
+        "{label} summarized ({line_count} lines, {char_count} chars):\n[head]\n{head}\n[tail]\n{tail}"
+    )
+}
+
+fn deterministic_model_fallback(context: &[AgentContextMessage], error: &str) -> String {
+    let mut text = format!(
+        "模型暂时不可用，已切换为确定性总结。错误摘要：{}",
+        redact_text(error)
+    );
+    if context.is_empty() {
+        text.push_str(
+            "\n当前会话还没有可用于继续分析的历史结果。你可以重试，或先让 Agent 执行一次诊断。",
+        );
+        return text;
+    }
+
+    text.push_str("\n我会基于当前会话已有记录继续：");
+    for (index, item) in context.iter().rev().take(3).enumerate() {
+        text.push_str(&format!(
+            "\n{}. {}",
+            index + 1,
+            compact_context_text("context", &item.content)
+                .lines()
+                .take(4)
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    text
+}
+
+fn remote_shell_tool_part(input: RemoteShellToolPartInput<'_>) -> MessagePart {
+    let mut part = tool_part(ToolPartData {
+        turn_id: input.turn_id.clone(),
+        agent_turn_id: input.turn_id,
+        tool_call_id: input.tool_call_id,
+        tool: "remote.shell.exec".to_string(),
+        title: "Remote shell command".to_string(),
+        status: input.status.to_string(),
+        requires_approval: input.requires_approval,
+        command: input.command.clone(),
+        input: json!({ "command": input.command }),
+        approval_id: input.approval_id,
+        output: input.output.map(|output| output.stdout.clone()),
+        stdout: input.output.map(|output| output.stdout.clone()),
+        stderr: input.output.map(|output| output.stderr.clone()),
+        exit_code: input.output.and_then(|output| output.exit_code),
+        duration_ms: input.output.map(|output| duration_ms(output.duration)),
+        timed_out: input.output.map(|output| output.timed_out),
+    });
+    part.id = input.id;
+    part
+}
+
+struct RemoteShellToolPartInput<'a> {
+    id: String,
+    turn_id: String,
+    tool_call_id: String,
+    command: String,
+    status: &'a str,
+    requires_approval: bool,
+    approval_id: Option<String>,
+    output: Option<&'a SshCommandOutput>,
+}
+
+fn upsert_local_part(message: &mut Message, part: MessagePart) {
+    if let Some(existing) = message
+        .parts
+        .iter_mut()
+        .find(|existing| existing.id == part.id)
+    {
+        *existing = part;
+    } else {
+        message.parts.push(part);
+    }
+}
+
+fn broadcast_message_part_updated(
+    state: &AppState,
+    session_id: &str,
+    message_id: &str,
+    part: &MessagePart,
+) {
+    broadcast_event(
+        state,
+        "message.part.updated",
+        json!({
+            "session_id": session_id,
+            "message_id": message_id,
+            "part": part,
+        }),
+    );
 }
 
 fn remote_tool_call(tool_call: AgentToolCall) -> Result<RemoteToolCall, String> {
@@ -796,6 +1372,26 @@ fn run_agent_shell_command(
     turn_id: &str,
     command: &str,
 ) -> Result<SshCommandOutput, crate::ssh_exec::CommandRunError> {
+    run_agent_shell_command_with_policy(
+        state,
+        session_id,
+        turn_id,
+        command,
+        None,
+        RiskAssessment::low("agent read-only diagnostic command"),
+        false,
+    )
+}
+
+fn run_agent_shell_command_with_policy(
+    state: &RouterState,
+    session_id: &str,
+    turn_id: &str,
+    command: &str,
+    cwd: Option<&str>,
+    risk: RiskAssessment,
+    requires_approval: bool,
+) -> Result<SshCommandOutput, crate::ssh_exec::CommandRunError> {
     broadcast_event(
         &state.app,
         "tool.started",
@@ -804,16 +1400,16 @@ fn run_agent_shell_command(
             "turn_id": turn_id,
             "tool": "remote.shell.exec",
             "command": command,
-            "requires_approval": false,
+            "requires_approval": requires_approval,
         }),
     );
     let output = state.runner.run(
         &state.app.ssh_target(),
         &SshCommandRequest {
             command: command.to_string(),
-            cwd: None,
+            cwd: cwd.map(ToOwned::to_owned),
             timeout_ms: None,
-            risk: RiskAssessment::low("agent read-only diagnostic command"),
+            risk,
         },
     )?;
     if !output.stdout.is_empty() {
@@ -860,24 +1456,175 @@ fn run_agent_shell_command(
     Ok(output)
 }
 
+fn agent_session_allow_audit(
+    session_id: &str,
+    turn_id: &str,
+    command: &str,
+    cwd: Option<&str>,
+    output: &SshCommandOutput,
+) -> AuditEntry {
+    AuditEntry {
+        id: format!("audit-{}", Uuid::new_v4()),
+        session_id: Some(session_id.to_string()),
+        kind: "approval.auto_approved".to_string(),
+        created_at_ms: now_ms(),
+        summary: "server-side session approval allowed command".to_string(),
+        metadata: json!({
+            "action": "approved",
+            "response": "approve_session",
+            "scope": "session",
+            "turn_id": turn_id,
+            "command": redact_text(command),
+            "cwd": cwd.map(redact_text),
+            "risk": {
+                "level": "high",
+                "reason": "server-side session approval grant",
+            },
+            "target": "remote.shell.exec",
+            "target_label": "Remote shell command",
+            "result": {
+                "exit_code": output.exit_code,
+                "duration_ms": duration_ms(output.duration),
+                "timed_out": output.timed_out,
+            }
+        }),
+    }
+}
+
 fn summarize_shell_output(command: &str, output: &SshCommandOutput) -> String {
     let exit_code = output
         .exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let mut summary = format!("Command `{command}` completed with exit code {exit_code}.");
-    if !output.stdout.is_empty() {
-        summary.push_str("\nstdout:\n");
-        summary.push_str(&output.stdout);
+    if let Some(summary) = diagnostic_conclusion(command, output, &exit_code) {
+        return summary;
     }
-    if !output.stderr.is_empty() {
-        summary.push_str("\nstderr:\n");
-        summary.push_str(&output.stderr);
-    }
+
+    let mut summary = format!(
+        "结论：命令已执行完成，退出码 {exit_code}。\n\n详细输出已记录在 Tool Activity 中。"
+    );
     if output.timed_out {
-        summary.push_str("\nCommand timed out.");
+        summary.push_str("\n注意：命令执行超时，结果可能不完整。");
     }
     summary
+}
+
+fn diagnostic_conclusion(
+    command: &str,
+    output: &SshCommandOutput,
+    exit_code: &str,
+) -> Option<String> {
+    let stdout = output.stdout.trim();
+    let stderr = output.stderr.trim();
+    let timed_out = output.timed_out;
+    let detail_suffix = "\n\n详细输出已记录在 Tool Activity 中。";
+    let conclusion = if command == preset_command("system_info")? {
+        let system_line = first_non_empty_line(stdout).unwrap_or("未获取到系统信息");
+        format!("结论：已获取当前系统信息。\n系统摘要：{system_line}{detail_suffix}")
+    } else if command == preset_command("network")? {
+        if stdout.contains("inet ") || stdout.contains("UP") {
+            format!("结论：网络接口信息已获取，至少存在可见网络接口。{detail_suffix}")
+        } else {
+            format!(
+                "结论：未从输出中看到明确的网络接口地址，需要继续检查链路或权限。{detail_suffix}"
+            )
+        }
+    } else if command == preset_command("dns")? {
+        if stdout.contains("has address")
+            || stdout.contains("Address")
+            || stdout.contains("nameserver")
+            || stdout.contains("deepseek.com")
+        {
+            format!("结论：DNS 查询或解析配置有返回，DNS 基础状态看起来正常。{detail_suffix}")
+        } else {
+            format!(
+                "结论：DNS 没有返回明确解析结果，需要检查 nameserver 和上游连通性。{detail_suffix}"
+            )
+        }
+    } else if command == preset_command("disk_usage")? {
+        if output_looks_disk_full(stdout) {
+            format!("结论：磁盘空间需要关注，存在使用率很高的文件系统。{detail_suffix}")
+        } else {
+            format!("结论：未看到明显满盘迹象。{detail_suffix}")
+        }
+    } else if command == preset_command("memory")? || command == preset_command("cpu_memory")? {
+        if stdout.contains("Mem:") || stdout.contains("load average") || stdout.contains("MemTotal")
+        {
+            format!(
+                "结论：已获取内存/CPU 负载信息，可继续根据 Tool Activity 判断异常进程。{detail_suffix}"
+            )
+        } else {
+            format!("结论：未获取到完整内存/CPU 信息，可能缺少相关系统工具。{detail_suffix}")
+        }
+    } else if command == preset_command("services")? {
+        if stdout.is_empty() && !stderr.is_empty() {
+            format!("结论：服务列表未正常返回，可能不是 systemd 环境或权限不足。{detail_suffix}")
+        } else {
+            format!("结论：已获取运行中的服务/进程列表。{detail_suffix}")
+        }
+    } else if command == preset_command("docker")? {
+        if stderr.contains("not found")
+            || stderr.contains("Cannot connect")
+            || stdout.contains("Cannot connect")
+        {
+            format!("结论：Docker 不可用或 daemon 未连接。{detail_suffix}")
+        } else if stdout.is_empty() {
+            format!("结论：Docker 没有返回容器/daemon 信息，可能未安装或没有运行。{detail_suffix}")
+        } else {
+            format!("结论：Docker 命令有返回，容器/daemon 状态已记录。{detail_suffix}")
+        }
+    } else if command == preset_command("openwrt_network")? {
+        if stdout.contains("OpenWrt") || stdout.contains("default") || stdout.contains("nameserver")
+        {
+            format!(
+                "结论：已获取路由器/OpenWrt 基础网络信息，可查看默认路由、接口和 DNS。{detail_suffix}"
+            )
+        } else {
+            format!(
+                "结论：未看到完整路由器网络信息，可能不是 OpenWrt 或缺少 ubus/ip 输出。{detail_suffix}"
+            )
+        }
+    } else if command == preset_command("logs")? {
+        if contains_log_warning(stdout) || contains_log_warning(stderr) {
+            format!(
+                "结论：最近日志中出现异常关键词，建议展开 Tool Activity 查看具体行。{detail_suffix}"
+            )
+        } else if stdout.is_empty() && stderr.is_empty() {
+            format!("结论：未获取到日志输出。{detail_suffix}")
+        } else {
+            format!("结论：已获取最近日志，未在摘要中发现明显异常关键词。{detail_suffix}")
+        }
+    } else {
+        return None;
+    };
+
+    Some(if timed_out {
+        format!("{conclusion}\n注意：命令执行超时，结果可能不完整。退出码 {exit_code}。")
+    } else {
+        format!("{conclusion}\n退出码：{exit_code}。")
+    })
+}
+
+fn first_non_empty_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+fn output_looks_disk_full(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        let Some(percent) = word.strip_suffix('%') else {
+            return false;
+        };
+        percent.parse::<u8>().is_ok_and(|value| value >= 90)
+    })
+}
+
+fn contains_log_warning(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "error", "failed", "panic", "oom", "denied", "timeout", "异常", "失败", "错误",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn redact_text(text: &str) -> String {
@@ -895,6 +1642,13 @@ fn redact_line(line: &str) -> String {
         {
             return format!("{}{}[REDACTED]", key, separator);
         }
+    }
+    let lower = line.to_ascii_lowercase();
+    if ["api_key", "apikey", "token", "secret", "bearer"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return "[REDACTED]".to_string();
     }
     line.to_string()
 }

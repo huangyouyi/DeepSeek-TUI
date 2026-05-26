@@ -60,6 +60,36 @@ fn diagnostics_preset_mapping_is_exact() {
     );
     assert_eq!(preset_command("network"), Some("ip addr || ifconfig"));
     assert_eq!(preset_command("working_directory"), Some("pwd"));
+    assert_eq!(
+        preset_command("dns"),
+        Some("getent hosts deepseek.com || nslookup deepseek.com || cat /etc/resolv.conf")
+    );
+    assert_eq!(
+        preset_command("cpu_memory"),
+        Some(
+            "uptime; free -m || cat /proc/meminfo; ps -eo pid,ppid,comm,%cpu,%mem --sort=-%cpu | head -20"
+        )
+    );
+    assert_eq!(
+        preset_command("services"),
+        Some(
+            "systemctl list-units --type=service --state=running --no-pager || ps -eo pid,comm,args | head -50"
+        )
+    );
+    assert_eq!(
+        preset_command("docker"),
+        Some(
+            "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || docker info"
+        )
+    );
+    assert_eq!(
+        preset_command("openwrt_network"),
+        Some("ubus call system board; ip route; ip addr; cat /etc/resolv.conf")
+    );
+    assert_eq!(
+        preset_command("logs"),
+        Some("journalctl -n 80 --no-pager || logread -l 80 || dmesg | tail -80")
+    );
     assert_eq!(preset_command("other"), None);
 }
 
@@ -72,6 +102,60 @@ fn diagnostics_presets_all_map_to_preset_commands() {
         assert_eq!(preset_command(&preset.key), Some(preset.command.as_str()));
         assert!(!preset.label.trim().is_empty());
         assert!(!preset.requires_approval);
+    }
+}
+
+#[test]
+fn diagnostics_include_common_read_only_presets() {
+    let presets = preset_diagnostics();
+    let keys = presets
+        .iter()
+        .map(|preset| preset.key.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        keys,
+        vec![
+            "system_info",
+            "current_user",
+            "disk_usage",
+            "memory",
+            "network",
+            "working_directory",
+            "dns",
+            "cpu_memory",
+            "services",
+            "docker",
+            "openwrt_network",
+            "logs",
+        ]
+    );
+
+    for preset in presets {
+        let command = preset.command.to_ascii_lowercase();
+        for forbidden in [
+            " install ",
+            " update ",
+            " upgrade ",
+            " restart",
+            " reboot",
+            " delete",
+            " rm ",
+            " rm -",
+            " rmdir",
+            " mkdir",
+            " touch ",
+            " tee ",
+            " >",
+            ">>",
+        ] {
+            assert!(
+                !command.contains(forbidden),
+                "{forbidden:?} should not appear in read-only preset {}: {}",
+                preset.key,
+                preset.command
+            );
+        }
     }
 }
 

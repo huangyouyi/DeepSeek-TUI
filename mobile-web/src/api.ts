@@ -1,5 +1,6 @@
 import type {
   AgentTurnRequest,
+  ApprovalAction,
   AgentTurnResponse,
   ApprovalResponse,
   AuditEntry,
@@ -16,6 +17,11 @@ import type {
   SshTarget,
   SshTargetUpdateRequest
 } from "./types";
+
+export type AgentTurnOptions = {
+  mode?: AgentTurnRequest["mode"];
+  retryTurnId?: string;
+};
 
 export type ApiContext = {
   fetch: typeof fetch;
@@ -164,12 +170,38 @@ export function prepareCommand(
   return requestJson<PendingApproval>("/api/commands/prepare", { method: "POST", body: JSON.stringify(body) }, api);
 }
 
-export function sendAgentTurn(sessionId: string, message: string, api?: ApiContext): Promise<AgentTurnResponse> {
-  const body: AgentTurnRequest = { message };
+export function sendAgentTurn(
+  sessionId: string,
+  message: string,
+  options?: AgentTurnOptions,
+  api?: ApiContext
+): Promise<AgentTurnResponse>;
+export function sendAgentTurn(sessionId: string, message: string, api?: ApiContext): Promise<AgentTurnResponse>;
+export function sendAgentTurn(
+  sessionId: string,
+  message: string,
+  optionsOrApi?: AgentTurnOptions | ApiContext,
+  api?: ApiContext
+): Promise<AgentTurnResponse> {
+  const options = isApiContext(optionsOrApi) ? undefined : optionsOrApi;
+  const apiContext = isApiContext(optionsOrApi) ? optionsOrApi : api;
+  const body: AgentTurnRequest = {
+    message,
+    mode: options?.mode,
+    retry_turn_id: options?.retryTurnId || undefined
+  };
 
   return requestJson<AgentTurnResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/agent-turn`,
     { method: "POST", body: JSON.stringify(body) },
+    apiContext
+  );
+}
+
+export function stopAgentTurn(sessionId: string, turnId: string, api?: ApiContext): Promise<{ status: string }> {
+  return requestJson<{ status: string }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/agent-turns/${encodeURIComponent(turnId)}/stop`,
+    { method: "POST" },
     api
   );
 }
@@ -178,13 +210,23 @@ export function approveCommand(id: string, api?: ApiContext): Promise<ApprovalRe
   return respondToApproval(id, "approve_once", api);
 }
 
+export function approveCommandForSession(id: string, api?: ApiContext): Promise<ApprovalResponse> {
+  return respondToApproval(id, "approve_session", api);
+}
+
+export const approveSessionCommand = approveCommandForSession;
+
 export function rejectCommand(id: string, api?: ApiContext): Promise<ApprovalResponse> {
-  return respondToApproval(id, "reject", api);
+  return rejectStopCommand(id, api);
+}
+
+export function rejectStopCommand(id: string, api?: ApiContext): Promise<ApprovalResponse> {
+  return respondToApproval(id, "reject_stop", api);
 }
 
 function respondToApproval(
   id: string,
-  response: "approve_once" | "reject",
+  response: ApprovalAction,
   api?: ApiContext
 ): Promise<ApprovalResponse> {
   return requestJson<ApprovalResponse>(
@@ -196,4 +238,8 @@ function respondToApproval(
 
 export function getRecentAudit(api?: ApiContext): Promise<AuditEntry[]> {
   return requestJson<AuditEntry[]>("/api/audit/recent", undefined, api);
+}
+
+function isApiContext(value: AgentTurnOptions | ApiContext | undefined): value is ApiContext {
+  return typeof value === "object" && value !== null && "fetch" in value;
 }

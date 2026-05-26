@@ -1,6 +1,10 @@
 import { FormEvent, useEffect, useMemo, useReducer, useState } from "react";
+import { ChatView } from "./components/ChatView";
+import { ProductShell } from "./components/ProductShell";
+import { ToolActivity } from "./components/ToolActivity";
 import {
   approveCommand,
+  approveCommandForSession,
   buildEventUrl,
   checkSshTarget,
   createSession,
@@ -10,21 +14,29 @@ import {
   getStoredAccessToken,
   getSshTarget,
   prepareCommand,
-  rejectCommand,
+  rejectStopCommand,
   runDiagnostic,
   saveAccessToken,
   sendAgentTurn,
+  stopAgentTurn,
   updateSshTarget
 } from "./api";
 import {
   buildFeedbackReport,
+  buildFinalAnswerReport,
   fallbackDiagnosticPresets,
   initialAppState,
   reduceEvent,
   resolveDiagnosticPresets,
+  selectChatItems,
+  selectExecutionStatus,
+  selectFinalAnswer,
+  selectToolActivities,
   withSseStatus
 } from "./state";
-import type { DiagnosticKey, DiagnosticPreset, ServerEvent, SshCheckResponse } from "./types";
+import type { AgentTurnMode, AgentTurnResponse, ApprovalAction, DiagnosticKey, DiagnosticPreset, HealthResponse, PendingApproval, ServerEvent, SshCheckResponse } from "./types";
+
+const CONTINUATION_PROMPT = "请继续上一轮任务。";
 
 type LocalAction =
   | { type: "event"; event: ServerEvent }
@@ -60,22 +72,35 @@ export default function App() {
   const [accessTokenInput, setAccessTokenInput] = useState(() => getStoredAccessToken());
   const [accessToken, setAccessToken] = useState(() => getStoredAccessToken());
   const [diagnostics, setDiagnostics] = useState<DiagnosticPreset[]>(fallbackDiagnosticPresets);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   const [sshCheck, setSshCheck] = useState<SshCheckResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [productSettingsOpen, setProductSettingsOpen] = useState(false);
+  const [latestAgentTurnId, setLatestAgentTurnId] = useState<string>("");
+  const route = globalThis.location?.pathname ?? "/web";
+  const isDebugRoute = route.startsWith("/debug");
+
+  useEffect(() => {
+    if (route === "/") {
+      window.history.replaceState({}, "", "/web");
+    }
+  }, [route]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       try {
-        await getHealth();
+        const nextHealth = await getHealth();
         if (!cancelled) {
+          setHealth(nextHealth);
           dispatch({ type: "server", status: "ok" });
         }
       } catch (err) {
         if (!cancelled) {
+          setHealth(null);
           dispatch({ type: "server", status: "error" });
           setError(messageFromError(err));
         }
@@ -138,6 +163,7 @@ export default function App() {
       "session.updated",
       "message.updated",
       "message.part.updated",
+      "assistant.started",
       "tool.started",
       "tool.stdout",
       "tool.stderr",
@@ -150,7 +176,12 @@ export default function App() {
     ];
     const handleNamedEvent = (message: MessageEvent<string>) => {
       try {
-        dispatch({ type: "event", event: JSON.parse(message.data) as ServerEvent });
+        const event = JSON.parse(message.data) as ServerEvent;
+        const turnId = turnIdFromEvent(event);
+        if (turnId) {
+          setLatestAgentTurnId(turnId);
+        }
+        dispatch({ type: "event", event });
       } catch {
         dispatch({
           type: "event",
@@ -187,6 +218,10 @@ export default function App() {
     }
     return `${target.user}@${target.host}:${target.port}`;
   }, [state.connection.target]);
+  const serviceLabel = health?.service || "unknown";
+  const modelLabel = health?.model || "unknown";
+  const executionStatus = useMemo(() => selectExecutionStatus(state, busy), [state, busy]);
+  const productConnectionStatus = `Agent Server ${state.connection.server} | SSE ${state.connection.sse} | Service ${serviceLabel} | Model ${modelLabel}`;
 
   const busyMessage = useMemo(() => {
     if (!busy) {
@@ -213,6 +248,12 @@ export default function App() {
   }, [busy, diagnostics, state.pendingApprovals]);
 
   const feedbackReport = useMemo(() => buildFeedbackReport(state, sshCheck), [state, sshCheck]);
+  const finalAnswerReport = useMemo(() => buildFinalAnswerReport(state), [state]);
+  const chatItems = useMemo(() => selectChatItems(state), [state]);
+  const finalAnswer = useMemo(() => selectFinalAnswer(state), [state]);
+  const toolActivities = useMemo(() => selectToolActivities(state), [state]);
+  const hasRunningTool = toolActivities.some((activity) => ["running", "started", "updated", "pending", "queued", "in_progress"].includes(activity.status.toLowerCase()));
+  const canStopAgentTurn = Boolean(latestAgentTurnId) && (busy === "agent" || state.pendingApprovals.length > 0 || hasRunningTool);
 
   async function handleTargetSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -307,24 +348,34 @@ export default function App() {
     }
   }
 
-  async function handleAgentTurn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleAgentTurn(event?: FormEvent<HTMLFormElement>, mode: AgentTurnMode = "normal") {
+    event?.preventDefault();
     const activeSessionId = sessionId || state.activeSessionId;
-    const trimmed = agentMessage.trim();
+    const trimmed = agentMessage.trim() || (mode === "continue" ? CONTINUATION_PROMPT : "");
 
-    if (!activeSessionId || !trimmed || busy === "agent") {
+    if (!activeSessionId || (!trimmed && mode === "normal") || busy === "agent") {
       return;
     }
 
     setBusy("agent");
     setError(null);
-    dispatch({ type: "event", event: { type: "message.updated", payload: { role: "user", text: trimmed } } });
+    if (trimmed) {
+      dispatch({ type: "event", event: { type: "message.updated", payload: { role: "user", text: trimmed } } });
+    }
     try {
-      const response = await sendAgentTurn(activeSessionId, trimmed);
+      const response = await sendAgentTurn(
+        activeSessionId,
+        trimmed,
+        mode === "normal" ? undefined : { mode, retryTurnId: mode === "retry" ? latestAgentTurnId : undefined }
+      );
+      setLatestAgentTurnId(latestTurnIdFromResponse(response) || latestAgentTurnId);
       if (response.assistant_text.trim()) {
         dispatch({
           type: "event",
-          event: { type: "message.updated", payload: { role: "assistant", text: response.assistant_text } }
+          event: {
+            type: "message.updated",
+            payload: { role: "assistant", status: response.status, text: response.assistant_text }
+          }
         });
       }
       response.pending_approvals.forEach((approval) => {
@@ -338,11 +389,16 @@ export default function App() {
     }
   }
 
-  async function handleApproval(id: string, response: "approve_once" | "reject") {
+  async function handleApproval(id: string, response: ApprovalAction) {
     setBusy(id);
     setError(null);
     try {
-      const result = response === "approve_once" ? await approveCommand(id) : await rejectCommand(id);
+      const result =
+        response === "approve_once"
+          ? await approveCommand(id)
+          : response === "approve_session"
+            ? await approveCommandForSession(id)
+            : await rejectStopCommand(id);
       dispatch({
         type: "event",
         event: {
@@ -364,6 +420,23 @@ export default function App() {
     }
   }
 
+  async function handleStopAgentTurn() {
+    const activeSessionId = sessionId || state.activeSessionId;
+    if (!activeSessionId || !latestAgentTurnId) {
+      return;
+    }
+
+    setBusy("agent-control");
+    setError(null);
+    try {
+      await stopAgentTurn(activeSessionId, latestAgentTurnId);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleCopyReport() {
     try {
       await navigator.clipboard.writeText(feedbackReport);
@@ -373,6 +446,196 @@ export default function App() {
       setCopyStatus("Copy failed");
       setError("Clipboard copy failed. Select the report text and copy it manually.");
     }
+  }
+
+  async function handleCopyFullReport() {
+    await handleCopyReport();
+  }
+
+  async function handleCopyFinalAnswer() {
+    if (!finalAnswerReport.trim()) {
+      setCopyStatus("No final answer");
+      setError("No final answer is available to copy yet.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(finalAnswerReport);
+      setCopyStatus("Final answer copied");
+      setError(null);
+    } catch {
+      setCopyStatus("Copy failed");
+      setError("Clipboard copy failed. Select the final answer text and copy it manually.");
+    }
+  }
+
+  async function handleNewProductConversation() {
+    setError(null);
+    try {
+      const session = await createSession();
+      setSessionId(session.id);
+      dispatch({ type: "event", event: { type: "session.updated", payload: session } });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  function handleSelectProductConversation(selectedSessionId: string) {
+    const session = state.sessions.find((item) => item.id === selectedSessionId);
+    if (session) {
+      setSessionId(session.id);
+      dispatch({ type: "event", event: { type: "session.updated", payload: session } });
+    }
+  }
+
+  if (!isDebugRoute) {
+    return (
+      <main className="product-entry">
+        {busyMessage ? (
+          <div className="busy-banner product-entry__banner" aria-live="polite">
+            {busyMessage}
+          </div>
+        ) : null}
+
+        {error ? <div className="error-banner product-entry__banner">{error}</div> : null}
+
+        {copyStatus ? (
+          <p className={`copy-status product-entry__banner ${copyStatus === "Copy failed" ? "copy-status-error" : ""}`} aria-live="polite">
+            {copyStatus}
+          </p>
+        ) : null}
+
+        {copyStatus === "Copy failed" ? (
+          <textarea
+            className="product-entry__manual-report"
+            aria-label="Manual copy report"
+            readOnly
+            value={feedbackReport}
+            rows={8}
+          />
+        ) : null}
+
+        <ProductShell
+          sessions={state.sessions}
+          activeSessionId={sessionId || state.activeSessionId}
+          connectionStatusText={productConnectionStatus}
+          executionStatus={{
+            label: executionStatus.label,
+            tone: executionStatus.state
+          }}
+          targetLabel={targetLabel}
+          messages={chatItems}
+          pendingApprovals={state.pendingApprovals}
+          toolActivities={toolActivities}
+          finalAnswer={finalAnswer?.text}
+          composer={{
+            value: agentMessage,
+            busy: busy === "agent",
+            onChange: setAgentMessage,
+            placeholder: "Ask the remote Linux device..."
+          }}
+          onSend={() => void handleAgentTurn()}
+          onContinue={() => void handleAgentTurn(undefined, "continue")}
+          onRetry={() => void handleAgentTurn(undefined, "retry")}
+          onStop={() => void handleStopAgentTurn()}
+          canStop={canStopAgentTurn}
+          controlsBusy={busy === "agent-control"}
+          continueDisabled={busy !== null}
+          retryDisabled={busy !== null}
+          onNewConversation={() => void handleNewProductConversation()}
+          onSelectConversation={handleSelectProductConversation}
+          onApproveApproval={(approvalId, action) => void handleApproval(approvalId, action)}
+          onRejectApproval={(approvalId, action) => void handleApproval(approvalId, action)}
+          onOpenSettings={() => setProductSettingsOpen(true)}
+          onCopyFinalAnswer={() => void handleCopyFinalAnswer()}
+          onCopyFullReport={() => void handleCopyFullReport()}
+        />
+
+        {productSettingsOpen ? (
+          <section className="product-settings" role="dialog" aria-label="Server settings">
+            <div className="product-settings__panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Server settings</h2>
+                  <span>{targetLabel}</span>
+                </div>
+                <button className="secondary-button compact-button" type="button" onClick={() => setProductSettingsOpen(false)}>
+                  Close
+                </button>
+              </div>
+
+              <div className="status-grid product-settings__status" aria-label="Connection status">
+                <StatusPill label="Agent Server" value={state.connection.server} />
+                <StatusPill label="SSE" value={state.connection.sse} />
+                <StatusPill label="Service" value={serviceLabel} />
+                <StatusPill label="Model" value={modelLabel} />
+                <StatusPill label="SSH target" value={targetLabel} />
+              </div>
+
+              <form className="target-form product-settings__form" onSubmit={handleTargetSave}>
+                <label>
+                  Host
+                  <input
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    onChange={(event) => setTargetForm((current) => ({ ...current, host: event.target.value }))}
+                    placeholder="192.168.30.244"
+                    spellCheck={false}
+                    type="text"
+                    value={targetForm.host}
+                  />
+                </label>
+                <label>
+                  User
+                  <input
+                    autoCapitalize="none"
+                    autoComplete="username"
+                    autoCorrect="off"
+                    onChange={(event) => setTargetForm((current) => ({ ...current, user: event.target.value }))}
+                    placeholder="root"
+                    spellCheck={false}
+                    type="text"
+                    value={targetForm.user}
+                  />
+                </label>
+                <label>
+                  Port
+                  <input
+                    inputMode="numeric"
+                    max="65535"
+                    min="1"
+                    onChange={(event) => setTargetForm((current) => ({ ...current, port: event.target.value }))}
+                    type="number"
+                    value={targetForm.port}
+                  />
+                </label>
+                <button className="primary-button" disabled={busy !== null} type="submit">
+                  {busy === "target" ? "Saving" : "Save target"}
+                </button>
+              </form>
+
+              <div className="ssh-check-row product-settings__check">
+                <button className="secondary-button" disabled={busy !== null} onClick={handleSshCheck} type="button">
+                  {busy === "ssh-check" ? "Checking" : "Check SSH"}
+                </button>
+                {sshCheck ? (
+                  <div className={`ssh-check-result ${sshCheck.status}`} aria-live="polite">
+                    <strong>{sshCheck.status}</strong>
+                    <span>{formatSshCheckResult(sshCheck)}</span>
+                  </div>
+                ) : (
+                  <div className="ssh-check-result idle" aria-live="polite">
+                    <strong>not checked</strong>
+                    <span>Run a target reachability check.</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : null}
+      </main>
+    );
   }
 
   return (
@@ -473,29 +736,32 @@ export default function App() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="panel agent-panel" aria-labelledby="agent-heading">
+      {copyStatus ? (
+        <p className={`copy-status ${copyStatus === "Copy failed" ? "copy-status-error" : ""}`} aria-live="polite">
+          {copyStatus}
+        </p>
+      ) : null}
+
+      <section className="panel agent-panel product-chat-panel" aria-labelledby="agent-heading">
         <div className="section-heading">
           <h2 id="agent-heading">Agent Chat</h2>
           <span>remote Linux assistant</span>
         </div>
-        <form className="agent-form" onSubmit={handleAgentTurn}>
-          <label>
-            Message
-            <textarea
-              autoCapitalize="sentences"
-              autoComplete="off"
-              autoCorrect="on"
-              disabled={busy === "agent"}
-              onChange={(event) => setAgentMessage(event.target.value)}
-              placeholder="Ask the remote Linux device..."
-              rows={3}
-              value={agentMessage}
-            />
-          </label>
-          <button className="primary-button agent-send-button" disabled={busy === "agent" || !agentMessage.trim()} type="submit">
-            {busy === "agent" ? "Sending" : "Send"}
-          </button>
-        </form>
+        <ChatView
+          messages={chatItems}
+          finalAnswer={finalAnswer?.text}
+          onCopyFinalAnswer={handleCopyFinalAnswer}
+          composer={{
+            value: agentMessage,
+            onChange: setAgentMessage,
+            onSubmit: () => void handleAgentTurn(),
+            disabled: false,
+            busy: busy === "agent",
+            placeholder: "Ask the remote Linux device...",
+            submitLabel: "Send",
+            busyLabel: "Sending"
+          }}
+        />
       </section>
 
       <section className="panel approval-panel" aria-labelledby="approval-heading">
@@ -513,7 +779,15 @@ export default function App() {
                   <strong>{approval.status}</strong>
                   {approval.cwd ? <span>{approval.cwd}</span> : null}
                 </div>
-                <pre>{approval.command}</pre>
+                <div className="approval-card__details">
+                  <div className="approval-card__field">
+                    <span>Command</span>
+                    <pre>{approval.command}</pre>
+                  </div>
+                  <ApprovalField label="Reason" value={approval.risk_reason || "Server needs this command to continue the current request."} />
+                  <ApprovalField label="Risk" value={approval.risk_level || "unknown"} />
+                  <ApprovalField label="Target" value={debugApprovalTargetLabel(approval)} />
+                </div>
                 <div className="approval-actions">
                   <button
                     className="primary-button"
@@ -524,12 +798,20 @@ export default function App() {
                     {busy === approval.id ? "Sending" : "Approve once"}
                   </button>
                   <button
-                    className="danger-button"
+                    className="secondary-button"
                     disabled={busy !== null}
-                    onClick={() => handleApproval(approval.id, "reject")}
+                    onClick={() => handleApproval(approval.id, "approve_session")}
                     type="button"
                   >
-                    Reject
+                    Approve session
+                  </button>
+                  <button
+                    className="danger-button"
+                    disabled={busy !== null}
+                    onClick={() => handleApproval(approval.id, "reject_stop")}
+                    type="button"
+                  >
+                    Reject and stop
                   </button>
                 </div>
               </article>
@@ -538,10 +820,22 @@ export default function App() {
         )}
       </section>
 
-      <section className="panel diagnostics-panel secondary-panel" aria-labelledby="diagnostics-heading">
+      <section className="panel tool-activity-panel" aria-labelledby="tool-activity-heading">
+        <div className="section-heading">
+          <h2 id="tool-activity-heading">Tool Activity</h2>
+          <span>{toolActivities.length}</span>
+        </div>
+        <ToolActivity activities={toolActivities} />
+      </section>
+
+      <details className="panel diagnostics-panel secondary-panel">
+        <summary>
+          <span>Diagnostics</span>
+          <span>{diagnostics.length} presets</span>
+        </summary>
         <div className="section-heading">
           <h2 id="diagnostics-heading">Diagnostics</h2>
-          <span>{diagnostics.length} presets</span>
+          <span>preset commands</span>
         </div>
         <div className="diagnostic-grid">
           {diagnostics.map((diagnostic) => (
@@ -557,9 +851,13 @@ export default function App() {
             </button>
           ))}
         </div>
-      </section>
+      </details>
 
-      <section className="panel command-panel secondary-panel" aria-labelledby="command-heading">
+      <details className="panel command-panel secondary-panel">
+        <summary>
+          <span>Advanced Command</span>
+          <span>approval required</span>
+        </summary>
         <div className="section-heading">
           <h2 id="command-heading">Advanced Command</h2>
           <span>approval required</span>
@@ -595,23 +893,26 @@ export default function App() {
             {busy === "command" ? "Preparing" : "Request approval"}
           </button>
         </form>
-      </section>
+      </details>
 
-      <section className="panel timeline-panel" aria-labelledby="timeline-heading">
-        <div className="section-heading">
-          <h2 id="timeline-heading">Timeline</h2>
+      <details className="panel timeline-panel secondary-panel">
+        <summary>
+          <span>Raw Timeline</span>
           <div className="section-actions">
             <span>{state.timeline.length}</span>
-            <button className="secondary-button compact-button" onClick={handleCopyReport} type="button">
+            <button
+              className="secondary-button compact-button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void handleCopyReport();
+              }}
+              type="button"
+            >
               Copy report
             </button>
           </div>
-        </div>
-        {copyStatus ? (
-          <p className={`copy-status ${copyStatus === "Copy failed" ? "copy-status-error" : ""}`} aria-live="polite">
-            {copyStatus}
-          </p>
-        ) : null}
+        </summary>
         <label className="report-copy-field">
           Copyable report
           <textarea readOnly rows={8} value={feedbackReport} />
@@ -631,7 +932,7 @@ export default function App() {
             ))
           )}
         </div>
-      </section>
+      </details>
 
       <details className="panel audit-panel" open>
         <summary>
@@ -656,6 +957,22 @@ export default function App() {
   );
 }
 
+function ApprovalField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="approval-card__field">
+      <span>{label}</span>
+      <p>{value}</p>
+    </div>
+  );
+}
+
+function debugApprovalTargetLabel(approval: PendingApproval): string {
+  if (approval.target_label && approval.target) {
+    return `${approval.target_label} (${approval.target})`;
+  }
+  return approval.target_label || approval.target || "current server target";
+}
+
 function StatusPill({ label, value }: { label: string; value: string }) {
   return (
     <div className="status-pill">
@@ -676,6 +993,25 @@ function approvalResponseSummary(result: unknown): string {
   const record = result as Record<string, unknown>;
   const text = record.assistant_text ?? record.summary;
   return typeof text === "string" ? text.trim() : "";
+}
+
+function latestTurnIdFromResponse(response: AgentTurnResponse): string {
+  const approvalTurnId = response.pending_approvals
+    .map((approval) => approval.agent_turn_id)
+    .find((turnId): turnId is string => Boolean(turnId));
+  return approvalTurnId || response.turn_id || "";
+}
+
+function turnIdFromEvent(event: ServerEvent): string {
+  if (event.type !== "assistant.started" && event.type !== "approval.asked") {
+    return "";
+  }
+
+  const payload = typeof event.payload === "object" && event.payload !== null
+    ? event.payload as Record<string, unknown>
+    : {};
+  const turnId = payload.agent_turn_id ?? payload.turn_id ?? payload.id;
+  return typeof turnId === "string" ? turnId : "";
 }
 
 function formatSshCheckResult(result: SshCheckResponse): string {

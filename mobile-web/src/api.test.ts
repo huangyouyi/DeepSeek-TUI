@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   approveCommand,
+  approveCommandForSession,
   buildEventUrl,
   checkSshTarget,
   createSession,
@@ -8,8 +9,10 @@ import {
   listMessages,
   prepareCommand,
   rejectCommand,
+  rejectStopCommand,
   runDiagnostic,
   sendAgentTurn,
+  stopAgentTurn,
   updateSshTarget
 } from "./api";
 
@@ -28,6 +31,8 @@ describe("api client", () => {
       .mockResolvedValueOnce(jsonResponse({ status: "queued" }))
       .mockResolvedValueOnce(jsonResponse({ id: "approval-1" }))
       .mockResolvedValueOnce(jsonResponse({ status: "approved" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "approved_for_session" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "rejected" }))
       .mockResolvedValueOnce(jsonResponse({ status: "rejected" }))
       .mockResolvedValueOnce(jsonResponse({ host: "192.168.30.244", user: "root", port: 2222 }))
       .mockResolvedValueOnce(jsonResponse({ status: "reachable", command: "true" }))
@@ -40,7 +45,9 @@ describe("api client", () => {
     await runDiagnostic({ sessionId: "session-1", diagnostic: "system_info" }, api);
     await prepareCommand({ sessionId: "session-1", command: "uptime", cwd: "/tmp" }, api);
     await approveCommand("approval-1", api);
-    await rejectCommand("approval-2", api);
+    await approveCommandForSession("approval-2", api);
+    await rejectStopCommand("approval-3", api);
+    await rejectCommand("approval-4", api);
     await updateSshTarget({ host: "192.168.30.244", user: "root", port: 2222 }, api);
     await checkSshTarget(api);
     await sendAgentTurn("session-1", "请问当前运行在什么系统？", api);
@@ -52,6 +59,8 @@ describe("api client", () => {
       "/api/commands/prepare",
       "/api/approvals/approval-1/respond",
       "/api/approvals/approval-2/respond",
+      "/api/approvals/approval-3/respond",
+      "/api/approvals/approval-4/respond",
       "/api/ssh/target",
       "/api/ssh/check",
       "/api/sessions/session-1/agent-turn"
@@ -70,17 +79,23 @@ describe("api client", () => {
       response: "approve_once"
     });
     expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({
-      response: "reject"
+      response: "approve_session"
     });
-    expect(fetchMock.mock.calls[6][1].method).toBe("PUT");
     expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({
+      response: "reject_stop"
+    });
+    expect(JSON.parse(fetchMock.mock.calls[7][1].body)).toEqual({
+      response: "reject_stop"
+    });
+    expect(fetchMock.mock.calls[8][1].method).toBe("PUT");
+    expect(JSON.parse(fetchMock.mock.calls[8][1].body)).toEqual({
       host: "192.168.30.244",
       user: "root",
       port: 2222
     });
-    expect(fetchMock.mock.calls[7][1].method).toBe("POST");
-    expect(fetchMock.mock.calls[8][1].method).toBe("POST");
-    expect(JSON.parse(fetchMock.mock.calls[8][1].body)).toEqual({
+    expect(fetchMock.mock.calls[9][1].method).toBe("POST");
+    expect(fetchMock.mock.calls[10][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[10][1].body)).toEqual({
       message: "请问当前运行在什么系统？"
     });
   });
@@ -121,5 +136,84 @@ describe("api client", () => {
     expect(buildEventUrl("phone token")).toBe("/event?access_token=phone+token");
     expect(buildEventUrl("")).toBe("/event");
     expect(buildEventUrl("   ")).toBe("/event");
+  });
+
+  it("returns agent turn messages with tool part data without dropping fields", async () => {
+    const response = {
+      session_id: "session-1",
+      turn_id: "turn-1",
+      status: "completed",
+      assistant_text: "done",
+      executed_tools: [],
+      pending_approvals: [],
+      messages: [{
+        id: "message-1",
+        session_id: "session-1",
+        role: "assistant",
+        created_at_ms: 123,
+        parts: [{
+          id: "part-tool-1",
+          kind: "tool",
+          data: {
+            turn_id: "turn-1",
+            agent_turn_id: "agent-turn-1",
+            tool_call_id: "tool-call-1",
+            approval_id: "approval-1",
+            tool: "shell",
+            title: "Run uname",
+            status: "completed",
+            requires_approval: true,
+            command: "uname -a",
+            input: { command: "uname -a" },
+            output: "Linux test-host",
+            stdout: "Linux test-host",
+            stderr: "",
+            exit_code: 0,
+            duration_ms: 42,
+            timed_out: false
+          }
+        }]
+      }]
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(response));
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    const result = await sendAgentTurn("session-1", "run uname", api);
+
+    expect(result.messages).toEqual(response.messages);
+    expect(result.messages?.[0].parts[0].data).toEqual(response.messages[0].parts[0].data);
+  });
+
+  it("sends retry and continue agent turn options in the request body", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ session_id: "session-1", turn_id: "turn-2", status: "queued", assistant_text: "", executed_tools: [], pending_approvals: [] }))
+      .mockResolvedValueOnce(jsonResponse({ session_id: "session-1", turn_id: "turn-3", status: "queued", assistant_text: "", executed_tools: [], pending_approvals: [] }));
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    await sendAgentTurn("session-1", "继续", { mode: "continue" }, api);
+    await sendAgentTurn("session-1", "重试上一轮", { mode: "retry", retryTurnId: "turn-1" }, api);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message: "继续",
+      mode: "continue"
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      message: "重试上一轮",
+      mode: "retry",
+      retry_turn_id: "turn-1"
+    });
+  });
+
+  it("posts stop requests to the current agent turn endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ status: "stopping" }));
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    await stopAgentTurn("session-1", "turn-1", api);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/session-1/agent-turns/turn-1/stop",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 });

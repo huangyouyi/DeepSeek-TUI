@@ -1,9 +1,11 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
 
-use crate::types::{AuditEntry, Message, PendingApproval, ServerEvent, SessionSummary, SshTarget};
+use crate::types::{
+    AuditEntry, Message, MessagePart, PendingApproval, ServerEvent, SessionSummary, SshTarget,
+};
 
 const AUDIT_RING_CAPACITY: usize = 128;
 const EVENT_RING_CAPACITY: usize = 256;
@@ -19,8 +21,16 @@ struct AppStateInner {
     sessions: HashMap<String, SessionSummary>,
     messages: HashMap<String, Vec<Message>>,
     pending_approvals: HashMap<String, PendingApproval>,
+    session_allows: HashSet<SessionAllowKey>,
     audit: VecDeque<AuditEntry>,
     ssh_target: SshTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct SessionAllowKey {
+    session_id: String,
+    command: String,
+    cwd: Option<String>,
 }
 
 impl AppState {
@@ -32,6 +42,7 @@ impl AppState {
                 sessions: HashMap::new(),
                 messages: HashMap::new(),
                 pending_approvals: HashMap::new(),
+                session_allows: HashSet::new(),
                 audit: VecDeque::with_capacity(AUDIT_RING_CAPACITY),
                 ssh_target,
             })),
@@ -108,6 +119,49 @@ impl AppState {
             .push(message);
     }
 
+    pub fn push_message_part(&self, session_id: &str, message_id: &str, part: MessagePart) -> bool {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("app state mutex must not be poisoned");
+        let Some(messages) = state.messages.get_mut(session_id) else {
+            return false;
+        };
+        let Some(message) = messages.iter_mut().find(|message| message.id == message_id) else {
+            return false;
+        };
+        message.parts.push(part);
+        true
+    }
+
+    pub fn upsert_message_part(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        part: MessagePart,
+    ) -> bool {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("app state mutex must not be poisoned");
+        let Some(messages) = state.messages.get_mut(session_id) else {
+            return false;
+        };
+        let Some(message) = messages.iter_mut().find(|message| message.id == message_id) else {
+            return false;
+        };
+        if let Some(existing) = message
+            .parts
+            .iter_mut()
+            .find(|existing| existing.id == part.id)
+        {
+            *existing = part;
+        } else {
+            message.parts.push(part);
+        }
+        true
+    }
+
     #[must_use]
     pub fn pending_approvals(&self) -> Vec<PendingApproval> {
         self.inner
@@ -134,6 +188,51 @@ impl AppState {
             .expect("app state mutex must not be poisoned")
             .pending_approvals
             .remove(approval_id)
+    }
+
+    #[must_use]
+    pub fn remove_pending_approvals_for_agent_turn(
+        &self,
+        agent_turn_id: &str,
+    ) -> Vec<PendingApproval> {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("app state mutex must not be poisoned");
+        let ids = state
+            .pending_approvals
+            .values()
+            .filter(|approval| approval.agent_turn_id().as_deref() == Some(agent_turn_id))
+            .map(|approval| approval.id.clone())
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter_map(|id| state.pending_approvals.remove(&id))
+            .collect()
+    }
+
+    pub fn grant_session_allow(&self, session_id: &str, command: &str, cwd: Option<&str>) {
+        self.inner
+            .lock()
+            .expect("app state mutex must not be poisoned")
+            .session_allows
+            .insert(SessionAllowKey {
+                session_id: session_id.to_string(),
+                command: command.to_string(),
+                cwd: cwd.map(ToOwned::to_owned),
+            });
+    }
+
+    #[must_use]
+    pub fn is_session_allowed(&self, session_id: &str, command: &str, cwd: Option<&str>) -> bool {
+        self.inner
+            .lock()
+            .expect("app state mutex must not be poisoned")
+            .session_allows
+            .contains(&SessionAllowKey {
+                session_id: session_id.to_string(),
+                command: command.to_string(),
+                cwd: cwd.map(ToOwned::to_owned),
+            })
     }
 
     pub fn push_audit(&self, entry: AuditEntry) {
