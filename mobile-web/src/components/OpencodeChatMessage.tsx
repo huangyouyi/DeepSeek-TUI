@@ -4,7 +4,7 @@ import { renderMarkdown } from "../markdown";
 import "../styles/markdown.css";
 import "../styles/message.css";
 
-type OpencodeChatMessageProps = {
+export type OpencodeChatMessageProps = {
   message: SessionMessageLike;
 };
 
@@ -191,11 +191,14 @@ function ToolCard({ tool }: { tool: ToolPartLike }) {
     <details
       className={`opencode-chat-message__tool${hasWarning ? " opencode-chat-message__tool--warning" : ""}`}
       open={isOpen}
-      onToggle={(event) => {
-        setIsOpen(event.currentTarget.open);
-      }}
     >
-      <summary className="opencode-chat-message__tool-summary">
+      <summary
+        className="opencode-chat-message__tool-summary"
+        onClick={(event) => {
+          event.preventDefault();
+          setIsOpen((current) => !current);
+        }}
+      >
         <span className="opencode-chat-message__tool-title">{title}</span>
         <span className="opencode-chat-message__tool-meta">
           <span className="opencode-chat-message__tool-status" title={status}>
@@ -208,7 +211,7 @@ function ToolCard({ tool }: { tool: ToolPartLike }) {
           {tool.state.metadata.durationMs !== undefined ? <span>{tool.state.metadata.durationMs} ms</span> : null}
         </span>
       </summary>
-      <div className="opencode-chat-message__tool-body">
+      <div className="opencode-chat-message__tool-body" hidden={!isOpen}>
         {output ? <pre className="opencode-chat-message__tool-output">{output}</pre> : null}
         {error ? (
           <pre className="opencode-chat-message__tool-output opencode-chat-message__tool-output--error">{error}</pre>

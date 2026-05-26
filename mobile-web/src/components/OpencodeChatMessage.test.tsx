@@ -74,11 +74,12 @@ describe("OpencodeChatMessage", () => {
 
     const details = screen.getByText("uname -a").closest("details");
     expect(details?.hasAttribute("open")).toBe(false);
-    expect(screen.getByText("Linux test-host")).toBeTruthy();
+    expect(screen.getByText("Linux test-host").closest(".opencode-chat-message__tool-body")?.hasAttribute("hidden")).toBe(true);
 
     fireEvent.click(screen.getByText("uname -a"));
 
     expect(details?.hasAttribute("open")).toBe(true);
+    expect(screen.getByText("Linux test-host").closest(".opencode-chat-message__tool-body")?.hasAttribute("hidden")).toBe(false);
   });
 
   it("expands pending and running tool output by default", () => {
@@ -87,14 +88,18 @@ describe("OpencodeChatMessage", () => {
         message={message("assistant", [
           tool("running", {
             output: "still working"
+          }),
+          tool("pending", {
+            output: "waiting for approval"
           })
         ])}
       />
     );
 
-    const details = screen.getByText("uname -a").closest("details");
-    expect(details?.hasAttribute("open")).toBe(true);
+    const details = screen.getAllByText("uname -a").map((node) => node.closest("details"));
+    expect(details.every((detail) => detail?.hasAttribute("open"))).toBe(true);
     expect(screen.getByText("still working")).toBeTruthy();
+    expect(screen.getByText("waiting for approval")).toBeTruthy();
   });
 
   it("shows error text with warning styling", () => {
