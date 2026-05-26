@@ -33,6 +33,15 @@ describe("Opencode standalone shell components", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a visible replacement focus style on the ChatInput textarea", () => {
+    render(<OpencodeChatInput onSendMessage={vi.fn()} />);
+
+    const input = screen.getByPlaceholderText("输入消息...");
+    fireEvent.focus(input);
+
+    expect((input as HTMLTextAreaElement).style.outline).toBe("2px solid #5eead4");
+  });
+
   it("renders Sidebar conversations and disables delete when only one remains", () => {
     const onDeleteConversation = vi.fn();
     render(
@@ -59,6 +68,65 @@ describe("Opencode standalone shell components", () => {
 
     fireEvent.click(deleteButton);
     expect(onDeleteConversation).not.toHaveBeenCalled();
+  });
+
+  it("removes closed Sidebar from layout and the accessibility tree", () => {
+    render(
+      <OpencodeSidebar
+        conversations={[
+          {
+            id: "conversation-1",
+            title: "Router health",
+            createdAt: 1710000000000,
+            updatedAt: 1710000060000
+          }
+        ]}
+        currentConversationId="conversation-1"
+        onSelectConversation={vi.fn()}
+        onNewConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        isOpen={false}
+      />
+    );
+
+    const sidebar = screen.getByLabelText("会话列表", { selector: "aside" });
+    expect(sidebar.getAttribute("aria-hidden")).toBe("true");
+    expect((sidebar as HTMLElement).style.display).toBe("none");
+    expect(screen.queryByRole("button", { name: "新建" })).toBeNull();
+  });
+
+  it("calls Sidebar new and select callbacks", () => {
+    const onNewConversation = vi.fn();
+    const onSelectConversation = vi.fn();
+    render(
+      <OpencodeSidebar
+        conversations={[
+          {
+            id: "conversation-1",
+            title: "Router health",
+            createdAt: 1710000000000,
+            updatedAt: 1710000060000
+          },
+          {
+            id: "conversation-2",
+            title: "Network check",
+            createdAt: 1710000100000,
+            updatedAt: 1710000160000
+          }
+        ]}
+        currentConversationId="conversation-1"
+        onSelectConversation={onSelectConversation}
+        onNewConversation={onNewConversation}
+        onDeleteConversation={vi.fn()}
+        isOpen
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新建" }));
+    fireEvent.click(screen.getByText("Network check").closest("button")!);
+
+    expect(onNewConversation).toHaveBeenCalledTimes(1);
+    expect(onSelectConversation).toHaveBeenCalledWith("conversation-2");
   });
 
   it("calls the welcome suggestion callback with the remote Linux health prompt", () => {

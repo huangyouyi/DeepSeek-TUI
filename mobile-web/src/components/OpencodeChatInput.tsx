@@ -34,6 +34,11 @@ const styles: Record<string, CSSProperties> = {
     outline: "none",
     font: "inherit"
   },
+  textareaFocused: {
+    borderColor: "#5eead4",
+    outline: "2px solid #5eead4",
+    outlineOffset: "2px"
+  },
   button: {
     minWidth: "76px",
     minHeight: "46px",
@@ -68,6 +73,7 @@ export function OpencodeChatInput({
   isSending = false
 }: OpencodeChatInputProps) {
   const [content, setContent] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const resizeTextarea = () => {
@@ -113,10 +119,15 @@ export function OpencodeChatInput({
             requestAnimationFrame(resizeTextarea);
           }}
           onKeyDown={handleKeyDown}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
           placeholder="输入消息..."
           disabled={disabled}
           rows={1}
-          style={styles.textarea}
+          style={{
+            ...styles.textarea,
+            ...(isFocused ? styles.textareaFocused : null)
+          }}
         />
         <button
           type="button"

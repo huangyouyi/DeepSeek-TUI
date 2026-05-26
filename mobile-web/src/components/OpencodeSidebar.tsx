@@ -31,7 +31,7 @@ const styles: Record<string, CSSProperties> = {
     transition: "transform 180ms ease"
   },
   closed: {
-    transform: "translateX(-100%)"
+    display: "none"
   },
   header: {
     display: "flex",
@@ -142,6 +142,7 @@ export function OpencodeSidebar({
   return (
     <aside
       aria-label="会话列表"
+      aria-hidden={!isOpen}
       style={{
         ...styles.sidebar,
         ...(isOpen ? null : styles.closed)
