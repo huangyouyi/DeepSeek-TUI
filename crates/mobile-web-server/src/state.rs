@@ -99,6 +99,43 @@ impl AppState {
     }
 
     #[must_use]
+    pub fn delete_session(&self, session_id: &str) -> bool {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("app state mutex must not be poisoned");
+        if state.sessions.remove(session_id).is_none() {
+            return false;
+        }
+
+        state.messages.remove(session_id);
+        state
+            .pending_approvals
+            .retain(|_, approval| approval.session_id != session_id);
+        state
+            .session_allows
+            .retain(|allow| allow.session_id != session_id);
+        true
+    }
+
+    #[must_use]
+    pub fn update_session_title(
+        &self,
+        session_id: &str,
+        title: String,
+        updated_at_ms: u64,
+    ) -> Option<SessionSummary> {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("app state mutex must not be poisoned");
+        let session = state.sessions.get_mut(session_id)?;
+        session.title = title;
+        session.updated_at_ms = updated_at_ms;
+        Some(session.clone())
+    }
+
+    #[must_use]
     pub fn messages(&self, session_id: &str) -> Vec<Message> {
         self.inner
             .lock()

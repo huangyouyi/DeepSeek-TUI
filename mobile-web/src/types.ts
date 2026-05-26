@@ -165,8 +165,16 @@ export type AuditEntry = {
   metadata?: unknown;
 };
 
+export type SessionDeletedPayload = {
+  id?: string;
+  session_id?: string;
+  removed_pending_approvals?: number;
+  deleted_at_ms?: number;
+};
+
 export type ServerEventType =
   | "session.updated"
+  | "session.deleted"
   | "message.updated"
   | "message.part.updated"
   | "tool.started"
@@ -174,6 +182,8 @@ export type ServerEventType =
   | "tool.stderr"
   | "tool.completed"
   | "tool.failed"
+  | "agent.tool.completed"
+  | "agent.tool.failed"
   | "approval.asked"
   | "approval.replied"
   | "audit.updated"

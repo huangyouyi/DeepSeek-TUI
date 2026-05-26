@@ -6,6 +6,7 @@ import type {
   Message,
   PendingApproval,
   ServerEvent,
+  SessionDeletedPayload,
   SessionSummary,
   SshCheckResponse,
   SshTarget,
@@ -120,12 +121,43 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
       const session = event.payload as SessionSummary;
       return {
         ...state,
-        activeSessionId: session.id,
+        activeSessionId: state.activeSessionId ?? session.id,
         sessions: upsertById(state.sessions, session),
         timeline: prependTimeline(state.timeline, {
           kind: "session",
           title: session.title || "Session updated",
           text: session.id
+        })
+      };
+    }
+    case "session.deleted": {
+      const deletion = sessionDeletedPayload(event.payload);
+      const sessionId = deletion.id ?? deletion.session_id;
+      if (!sessionId) {
+        return {
+          ...state,
+          timeline: prependTimeline(state.timeline, {
+            kind: "session",
+            title: "Session deleted",
+            text: stringifyPayload(event.payload)
+          })
+        };
+      }
+
+      const wasActiveSession = state.activeSessionId === sessionId;
+
+      return {
+        ...state,
+        activeSessionId: wasActiveSession ? undefined : state.activeSessionId,
+        sessions: state.sessions.filter((session) => session.id !== sessionId),
+        messages: state.messages.filter((message) => message.session_id !== sessionId),
+        pendingApprovals: state.pendingApprovals.filter((approval) => approval.session_id !== sessionId),
+        chatItems: wasActiveSession ? [] : state.chatItems,
+        toolActivities: wasActiveSession ? [] : state.toolActivities,
+        timeline: prependTimeline(state.timeline, {
+          kind: "session",
+          title: "Session deleted",
+          text: sessionId
         })
       };
     }
@@ -216,7 +248,9 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
     }
     case "tool.started":
     case "tool.completed":
-    case "tool.failed": {
+    case "tool.failed":
+    case "agent.tool.completed":
+    case "agent.tool.failed": {
       const payload = objectPayload(event.payload);
       const activity = toolActivityFromLegacyEvent(state.toolActivities, event.type, payload);
       return {
@@ -429,12 +463,22 @@ function objectPayload(payload: unknown): Record<string, unknown> {
   return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
 }
 
+function sessionDeletedPayload(payload: unknown): SessionDeletedPayload {
+  const value = objectPayload(payload);
+  return {
+    id: stringField(value, "id", undefined),
+    session_id: stringField(value, "session_id", undefined),
+    removed_pending_approvals: numberField(value, "removed_pending_approvals", undefined),
+    deleted_at_ms: numberField(value, "deleted_at_ms", undefined)
+  };
+}
+
 function stringField<T extends string | undefined>(payload: Record<string, unknown>, field: string, fallback: T): string | T {
   const value = payload[field];
   return typeof value === "string" ? value : fallback;
 }
 
-function numberField(payload: Record<string, unknown>, field: string, fallback: number): number {
+function numberField<T extends number | undefined>(payload: Record<string, unknown>, field: string, fallback: T): number | T {
   const value = payload[field];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -588,8 +632,10 @@ function legacyToolStatus(eventType: ServerEvent["type"]): string {
     case "tool.started":
       return "running";
     case "tool.completed":
+    case "agent.tool.completed":
       return "completed";
     case "tool.failed":
+    case "agent.tool.failed":
       return "failed";
     default:
       return "updated";

@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, StatusCode, Uri, header},
     middleware,
     response::IntoResponse,
-    routing::{get, get_service, post},
+    routing::{delete, get, get_service, post},
 };
 use deepseek_mobile_agent_core::{
     remote_schema::{RemoteToolCall, RemoteToolName},
@@ -18,13 +18,13 @@ use deepseek_mobile_agent_core::{
     ssh::SshCommandRequest,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 use crate::{
     AppState, AuditEntry, CommandPrepareRequest, DiagnosticRequest, HealthResponse, Message,
-    MessagePart, SessionSummary, SshTarget,
+    MessagePart, PendingApproval, SessionSummary, SshTarget,
     agent_model::{
         AgentContextMessage, AgentModel, AgentModelRequest, AgentToolCall, MockAgentModel,
     },
@@ -85,6 +85,11 @@ struct RouterState {
 #[derive(Debug, Deserialize)]
 struct CreateSessionRequest {
     title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSessionTitleRequest {
+    title: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +223,10 @@ fn app_router_inner(
         .route("/api/ssh/target", get(get_ssh_target).put(put_ssh_target))
         .route("/api/ssh/check", post(check_ssh_target))
         .route("/api/sessions", get(list_sessions).post(create_session))
+        .route(
+            "/api/sessions/{id}",
+            delete(delete_session).patch(update_session_title),
+        )
         .route("/api/sessions/{id}/messages", get(list_messages))
         .route("/api/sessions/{id}/prompt", post(prompt_session))
         .route("/api/sessions/{id}/agent-turn", post(agent_turn))
@@ -445,6 +454,100 @@ async fn create_session(
     (StatusCode::CREATED, Json(session))
 }
 
+async fn delete_session(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let removed_pending_approvals = state
+        .app
+        .pending_approvals()
+        .iter()
+        .filter(|approval| approval.session_id == session_id)
+        .count();
+    if state.app.delete_session(&session_id) {
+        let now = now_ms();
+        state.app.push_audit(AuditEntry {
+            id: Uuid::new_v4().to_string(),
+            session_id: Some(session_id.clone()),
+            kind: "session.deleted".to_string(),
+            created_at_ms: now,
+            summary: "deleted session".to_string(),
+            metadata: json!({
+                "removed_pending_approvals": removed_pending_approvals,
+            }),
+        });
+        broadcast_event(
+            &state.app,
+            "session.deleted",
+            json!({
+                "id": session_id.clone(),
+                "session_id": session_id,
+                "removed_pending_approvals": removed_pending_approvals,
+                "deleted_at_ms": now,
+            }),
+        );
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": "session_not_found",
+                "message": format!("session not found: {session_id}")
+            })),
+        )
+            .into_response()
+    }
+}
+
+async fn update_session_title(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<UpdateSessionTitleRequest>,
+) -> impl IntoResponse {
+    let title = request.title.trim().to_string();
+    if title.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": "empty_session_title",
+                "message": "session title must not be empty"
+            })),
+        )
+            .into_response();
+    }
+
+    let now = now_ms();
+    match state.app.update_session_title(&session_id, title, now) {
+        Some(session) => {
+            state.app.push_audit(AuditEntry {
+                id: Uuid::new_v4().to_string(),
+                session_id: Some(session.id.clone()),
+                kind: "session.updated".to_string(),
+                created_at_ms: now,
+                summary: "updated session title".to_string(),
+                metadata: json!({
+                    "title": session.title.clone(),
+                    "updated_at_ms": session.updated_at_ms,
+                }),
+            });
+            broadcast_event(
+                &state.app,
+                "session.updated",
+                serde_json::to_value(&session).expect("session summary must serialize"),
+            );
+            (StatusCode::OK, Json(session)).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": "session_not_found",
+                "message": format!("session not found: {session_id}")
+            })),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PromptRequest {
     input: Option<String>,
@@ -564,6 +667,13 @@ async fn agent_turn(
     let policy = AgentToolPolicy;
     let approval_service = ApprovalService::new(state.runner.clone());
     let mut assistant_text = model_response.assistant_text;
+    let model_tool_calls =
+        if is_agent_meta_question(&user_text) && !model_response.tool_calls.is_empty() {
+            assistant_text = agent_meta_answer(&user_text);
+            Vec::new()
+        } else {
+            model_response.tool_calls
+        };
     let mut assistant = Message {
         id: Uuid::new_v4().to_string(),
         session_id: session_id.clone(),
@@ -576,7 +686,7 @@ async fn agent_turn(
     let mut pending_approvals = Vec::new();
     let mut rejected_tools = Vec::new();
 
-    for tool_call in model_response.tool_calls {
+    for tool_call in model_tool_calls {
         let remote_call = match remote_tool_call(tool_call) {
             Ok(call) => call,
             Err(reason) => {
@@ -868,6 +978,13 @@ async fn agent_turn(
             "I could not run one or more model-proposed tools: {}",
             rejected_tools.join("; ")
         );
+    } else if pending_approvals.is_empty() && !executed_tools.is_empty() {
+        assistant_text = final_agent_turn_text(&state, &session_id, &turn_id);
+        state.app.push_audit(agent_turn_finalized_audit(
+            &session_id,
+            &turn_id,
+            json!({ "source": "inline_tool_result" }),
+        ));
     }
 
     let status = if !pending_approvals.is_empty() {
@@ -1032,7 +1149,13 @@ async fn respond_approval(
 ) -> impl IntoResponse {
     let service = ApprovalService::new(state.runner.clone());
     match service.respond(&state.app, &approval_id, request) {
-        Ok(response) => {
+        Ok(mut response) => {
+            if response.status == "approved"
+                && let Some(final_text) = finalize_approved_agent_turn(&state, &response.approval)
+            {
+                response.result["summary"] = json!(final_text);
+                response.result["assistant_text"] = json!(final_text);
+            }
             if let Some(entry) = state.app.audit_recent().last().cloned() {
                 broadcast_event(
                     &state.app,
@@ -1293,6 +1416,125 @@ fn deterministic_model_fallback(context: &[AgentContextMessage], error: &str) ->
     text
 }
 
+fn finalize_approved_agent_turn(state: &RouterState, approval: &PendingApproval) -> Option<String> {
+    let agent_turn_id = approval.agent_turn_id()?;
+    let has_remaining_turn_approvals = state
+        .app
+        .pending_approvals()
+        .into_iter()
+        .any(|pending| pending.agent_turn_id().as_deref() == Some(agent_turn_id.as_str()));
+    if has_remaining_turn_approvals {
+        return None;
+    }
+
+    let final_text = final_agent_turn_text(state, &approval.session_id, &agent_turn_id);
+
+    let message = session_message(
+        &approval.session_id,
+        "assistant",
+        &final_text,
+        json!({
+            "agent_turn_id": agent_turn_id,
+            "status": "completed",
+            "finalized_from": "tool_result",
+        }),
+    );
+    state.app.push_message(message.clone());
+    state.app.push_audit(agent_turn_finalized_audit(
+        &approval.session_id,
+        &agent_turn_id,
+        json!({
+            "source": "approved_tool_result",
+            "approval_id": approval.id,
+            "command": redact_text(&approval.command),
+        }),
+    ));
+    broadcast_event(
+        &state.app,
+        "message.updated",
+        serde_json::to_value(&message).expect("message must serialize"),
+    );
+    broadcast_event(
+        &state.app,
+        "assistant.completed",
+        json!({
+            "session_id": approval.session_id,
+            "turn_id": agent_turn_id,
+            "status": "completed",
+        }),
+    );
+    Some(final_text)
+}
+
+fn final_agent_turn_text(state: &RouterState, session_id: &str, turn_id: &str) -> String {
+    let context = build_agent_context(&state.app, session_id);
+    let final_message = "根据刚才远程命令结果，给出最终结论。不要复述完整 stdout/stderr；如果命令退出码非 0 或输出不完整，请说明哪些结果可信、哪些检查没有完成，以及建议下一步。";
+    match state.model.complete(&AgentModelRequest {
+        session_id: session_id.to_string(),
+        message: final_message.to_string(),
+        context: context.clone(),
+    }) {
+        Ok(response) if !response.assistant_text.trim().is_empty() => response.assistant_text,
+        Ok(_) => deterministic_tool_result_fallback(&context),
+        Err(error) => {
+            let mut fallback = deterministic_model_fallback(&context, &error.to_string());
+            fallback.push_str(&format!("\n关联轮次：{turn_id}。"));
+            fallback
+        }
+    }
+}
+
+fn agent_turn_finalized_audit(session_id: &str, turn_id: &str, mut metadata: Value) -> AuditEntry {
+    metadata["turn_id"] = json!(turn_id);
+    AuditEntry {
+        id: format!("audit-{}", Uuid::new_v4()),
+        session_id: Some(session_id.to_string()),
+        kind: "agent.turn_finalized".to_string(),
+        created_at_ms: now_ms(),
+        summary: "agent turn finalized from remote tool result".to_string(),
+        metadata,
+    }
+}
+
+fn deterministic_tool_result_fallback(context: &[AgentContextMessage]) -> String {
+    let tool_context = context
+        .iter()
+        .rev()
+        .find(|item| item.content.contains("Tool remote.shell.exec"));
+    if let Some(item) = tool_context {
+        let has_nonzero = item
+            .content
+            .lines()
+            .any(|line| line.trim_start().starts_with("exit_code:") && !line.ends_with(" 0"));
+        if has_nonzero {
+            return "结论：远程命令已有部分输出，但退出码非 0，结果可能不完整。请根据工具输出中已返回的段落判断现状，并补跑缺失的检查。".to_string();
+        }
+    }
+    "结论：远程命令已执行完成，已基于工具结果生成本轮结论。".to_string()
+}
+
+fn is_agent_meta_question(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let asks_missing_summary = text.contains("没有得到汇总")
+        || text.contains("没有给")
+        || text.contains("为何没有")
+        || text.contains("为什么没有")
+        || lower.contains("why no summary");
+    asks_missing_summary
+        && (text.contains("汇总")
+            || text.contains("总结")
+            || text.contains("结论")
+            || lower.contains("summary"))
+}
+
+fn agent_meta_answer(text: &str) -> String {
+    if text.contains("没有得到汇总") || text.contains("汇总") || text.contains("结论") {
+        return "没有得到汇总的原因是上一轮远程命令结果没有重新回到 Agent 做最终分析，只展示了工具执行记录。后续会把工具结果作为上下文交给 Agent，再由 Agent 给出结论；这类产品流程问题不会再触发新的远程命令。".to_string();
+    }
+    "这是关于当前 Agent 流程的问题，不需要执行新的远程命令。我会基于已有会话记录解释原因。"
+        .to_string()
+}
+
 fn remote_shell_tool_part(input: RemoteShellToolPartInput<'_>) -> MessagePart {
     let mut part = tool_part(ToolPartData {
         turn_id: input.turn_id.clone(),
@@ -1500,9 +1742,8 @@ fn summarize_shell_output(command: &str, output: &SshCommandOutput) -> String {
         return summary;
     }
 
-    let mut summary = format!(
-        "结论：命令已执行完成，退出码 {exit_code}。\n\n详细输出已记录在 Tool Activity 中。"
-    );
+    let mut summary =
+        format!("结论：命令已执行完成，退出码 {exit_code}。\n\n详细输出已保留在本条工具结果中。");
     if output.timed_out {
         summary.push_str("\n注意：命令执行超时，结果可能不完整。");
     }
@@ -1517,7 +1758,7 @@ fn diagnostic_conclusion(
     let stdout = output.stdout.trim();
     let stderr = output.stderr.trim();
     let timed_out = output.timed_out;
-    let detail_suffix = "\n\n详细输出已记录在 Tool Activity 中。";
+    let detail_suffix = "\n\n详细输出已保留在本条工具结果中。";
     let conclusion = if command == preset_command("system_info")? {
         let system_line = first_non_empty_line(stdout).unwrap_or("未获取到系统信息");
         format!("结论：已获取当前系统信息。\n系统摘要：{system_line}{detail_suffix}")
@@ -1542,8 +1783,13 @@ fn diagnostic_conclusion(
             )
         }
     } else if command == preset_command("disk_usage")? {
-        if output_looks_disk_full(stdout) {
-            format!("结论：磁盘空间需要关注，存在使用率很高的文件系统。{detail_suffix}")
+        let findings = disk_usage_findings(stdout);
+        if findings.actionable_full {
+            format!("结论：磁盘空间需要关注，存在使用率很高的可写文件系统。{detail_suffix}")
+        } else if findings.ignored_rom_full {
+            format!(
+                "结论：未看到明显满盘迹象。/rom 是只读系统镜像，显示 100% 通常是 OpenWrt 正常现象；请重点关注 /overlay、/ 和外接挂载点。{detail_suffix}"
+            )
         } else {
             format!("结论：未看到明显满盘迹象。{detail_suffix}")
         }
@@ -1551,7 +1797,7 @@ fn diagnostic_conclusion(
         if stdout.contains("Mem:") || stdout.contains("load average") || stdout.contains("MemTotal")
         {
             format!(
-                "结论：已获取内存/CPU 负载信息，可继续根据 Tool Activity 判断异常进程。{detail_suffix}"
+                "结论：已获取内存/CPU 负载信息，可继续根据本条工具结果判断异常进程。{detail_suffix}"
             )
         } else {
             format!("结论：未获取到完整内存/CPU 信息，可能缺少相关系统工具。{detail_suffix}")
@@ -1587,7 +1833,7 @@ fn diagnostic_conclusion(
     } else if command == preset_command("logs")? {
         if contains_log_warning(stdout) || contains_log_warning(stderr) {
             format!(
-                "结论：最近日志中出现异常关键词，建议展开 Tool Activity 查看具体行。{detail_suffix}"
+                "结论：最近日志中出现异常关键词，建议展开本条工具结果查看具体行。{detail_suffix}"
             )
         } else if stdout.is_empty() && stderr.is_empty() {
             format!("结论：未获取到日志输出。{detail_suffix}")
@@ -1600,6 +1846,8 @@ fn diagnostic_conclusion(
 
     Some(if timed_out {
         format!("{conclusion}\n注意：命令执行超时，结果可能不完整。退出码 {exit_code}。")
+    } else if exit_code != "0" {
+        format!("{conclusion}\n注意：命令退出码为 {exit_code}，结果可能只是部分输出。")
     } else {
         format!("{conclusion}\n退出码：{exit_code}。")
     })
@@ -1609,13 +1857,58 @@ fn first_non_empty_line(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
-fn output_looks_disk_full(text: &str) -> bool {
-    text.split_whitespace().any(|word| {
-        let Some(percent) = word.strip_suffix('%') else {
-            return false;
+#[derive(Clone, Copy, Debug, Default)]
+struct DiskUsageFindings {
+    actionable_full: bool,
+    ignored_rom_full: bool,
+}
+
+fn disk_usage_findings(text: &str) -> DiskUsageFindings {
+    let mut findings = DiskUsageFindings::default();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        let Some((percent_index, percent)) =
+            columns.iter().enumerate().find_map(|(index, column)| {
+                column
+                    .strip_suffix('%')
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .map(|value| (index, value))
+            })
+        else {
+            continue;
         };
-        percent.parse::<u8>().is_ok_and(|value| value >= 90)
-    })
+        let mountpoint = columns
+            .get(percent_index + 1)
+            .or_else(|| columns.last())
+            .copied()
+            .unwrap_or("");
+        let filesystem = columns.first().copied().unwrap_or("");
+        if percent < 90 {
+            continue;
+        }
+        if is_ignored_readonly_rom_mount(filesystem, mountpoint) {
+            findings.ignored_rom_full = true;
+        } else if is_actionable_disk_mount(mountpoint) {
+            findings.actionable_full = true;
+        }
+    }
+    findings
+}
+
+fn is_ignored_readonly_rom_mount(filesystem: &str, mountpoint: &str) -> bool {
+    mountpoint == "/rom" || (filesystem == "/dev/root" && mountpoint == "/rom")
+}
+
+fn is_actionable_disk_mount(mountpoint: &str) -> bool {
+    mountpoint == "/"
+        || mountpoint == "/overlay"
+        || mountpoint == "/tmp"
+        || mountpoint == "/var"
+        || mountpoint == "/home"
+        || mountpoint == "/opt"
+        || mountpoint == "/data"
+        || mountpoint.starts_with("/mnt/")
+        || mountpoint.starts_with("/overlay/")
 }
 
 fn contains_log_warning(text: &str) -> bool {

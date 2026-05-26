@@ -3,7 +3,8 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use deepseek_mobile_web_server::{
-    AppState, AuditEntry, SshTarget, app_router, app_router_with_access_token,
+    AppState, AuditEntry, Message, MessagePart, PendingApproval, SessionSummary, SshTarget,
+    app_router, app_router_with_access_token,
 };
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -159,6 +160,209 @@ async fn sessions_can_be_created_listed_and_messages_read() {
         .expect("request must complete");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_response(response).await, json!([]));
+}
+
+#[tokio::test]
+async fn session_can_be_deleted_with_scoped_state_removed() {
+    let state = test_state();
+    state.upsert_session(SessionSummary {
+        id: "session-delete".to_string(),
+        title: "Delete me".to_string(),
+        created_at_ms: 100,
+        updated_at_ms: 100,
+    });
+    state.upsert_session(SessionSummary {
+        id: "session-keep".to_string(),
+        title: "Keep me".to_string(),
+        created_at_ms: 200,
+        updated_at_ms: 200,
+    });
+    state.push_message(Message {
+        id: "message-delete".to_string(),
+        session_id: "session-delete".to_string(),
+        role: "user".to_string(),
+        created_at_ms: 101,
+        parts: vec![MessagePart {
+            id: "part-delete".to_string(),
+            kind: "text".to_string(),
+            text: Some("remove this".to_string()),
+            data: json!({}),
+        }],
+    });
+    state.push_message(Message {
+        id: "message-keep".to_string(),
+        session_id: "session-keep".to_string(),
+        role: "user".to_string(),
+        created_at_ms: 201,
+        parts: Vec::new(),
+    });
+    state.insert_pending_approval(PendingApproval::remote_shell(
+        "approval-delete".to_string(),
+        "session-delete".to_string(),
+        "systemctl restart ssh".to_string(),
+        None,
+        102,
+        "pending".to_string(),
+    ));
+    state.insert_pending_approval(PendingApproval::remote_shell(
+        "approval-keep".to_string(),
+        "session-keep".to_string(),
+        "uptime".to_string(),
+        None,
+        202,
+        "pending".to_string(),
+    ));
+    state.grant_session_allow("session-delete", "uptime", None);
+
+    let mut events = state.subscribe();
+    let app = app_router(state.clone(), false);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/sessions/session-delete")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let deleted_event = events.try_recv().expect("delete should broadcast event");
+    assert_eq!(deleted_event.event_type, "session.deleted");
+    assert_eq!(deleted_event.payload["id"], "session-delete");
+    assert_eq!(deleted_event.payload["session_id"], "session-delete");
+    assert_eq!(deleted_event.payload["removed_pending_approvals"], 1);
+    assert_eq!(state.messages("session-delete"), Vec::new());
+    assert!(!state.is_session_allowed("session-delete", "uptime", None));
+    assert_eq!(state.messages("session-keep").len(), 1);
+    let remaining_approvals = state.pending_approvals();
+    assert_eq!(remaining_approvals.len(), 1);
+    assert_eq!(remaining_approvals[0].id, "approval-keep");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response(response).await,
+        json!([{
+            "id": "session-keep",
+            "title": "Keep me",
+            "created_at_ms": 200,
+            "updated_at_ms": 200
+        }])
+    );
+    let audit = state.audit_recent();
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].kind, "session.deleted");
+    assert_eq!(audit[0].session_id.as_deref(), Some("session-delete"));
+    assert_eq!(audit[0].metadata["removed_pending_approvals"], 1);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/sessions/session-delete")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn session_title_can_be_trimmed_updated_and_rejects_empty_title() {
+    let state = test_state();
+    let session_id = "session-title";
+    state.upsert_session(SessionSummary {
+        id: session_id.to_string(),
+        title: "Initial".to_string(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    });
+    let mut events = state.subscribe();
+    let app = app_router(state.clone(), false);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(format!("/api/sessions/{session_id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"title": "  Router Lab  "}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = json_response(response).await;
+    assert_eq!(updated["id"], session_id);
+    assert_eq!(updated["title"], "Router Lab");
+    assert_eq!(updated["created_at_ms"], 1);
+    assert!(updated["updated_at_ms"].as_u64().expect("updated_at_ms") > 1);
+    let updated_event = events
+        .try_recv()
+        .expect("title update should broadcast event");
+    assert_eq!(updated_event.event_type, "session.updated");
+    assert_eq!(updated_event.payload, updated);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(response.status(), StatusCode::OK);
+    let sessions = json_response(response).await;
+    assert_eq!(sessions[0]["title"], "Router Lab");
+    assert_eq!(sessions[0]["updated_at_ms"], updated["updated_at_ms"]);
+    let audit = state.audit_recent();
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].kind, "session.updated");
+    assert_eq!(audit[0].session_id.as_deref(), Some(session_id));
+    assert_eq!(audit[0].metadata["title"], "Router Lab");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(format!("/api/sessions/{session_id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"title": "   "}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri("/api/sessions/missing")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"title": "Missing"}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

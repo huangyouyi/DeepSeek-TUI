@@ -1,0 +1,148 @@
+.PermissionDialogOverlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(7, 10, 22, 0.78);
+  backdrop-filter: blur(6px);
+  animation: permissionOverlayShow 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 50;
+}
+
+.PermissionDialogContent {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, calc(100% - 2rem));
+  background: radial-gradient(circle at 20% 20%, rgba(118, 82, 255, 0.1), transparent 35%), radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.12), transparent 25%), #0c1020;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 18px;
+  box-shadow: 0 25px 80px rgba(0, 0, 0, 0.45);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: #e2e8f0;
+  animation: permissionContentShow 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 51;
+}
+
+.PermissionDialogHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.PermissionDialogTag {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a78bfa;
+  opacity: 0.9;
+}
+
+.PermissionDialogTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.PermissionDialogDescription {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.PermissionDialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.PermissionDialogCard {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 14px;
+  color: #e2e8f0;
+}
+
+.PermissionDialogCard--accent {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(129, 140, 248, 0.45);
+  color: #c7d2fe;
+}
+
+.PermissionDialogCode {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+}
+
+.PermissionDialogError {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: #fecdd3;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.PermissionDialogActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.PermissionDialogButton {
+  flex: 1 1 120px;
+  height: 38px;
+  border-radius: 10px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 160ms ease, opacity 120ms ease;
+  color: #0b1020;
+}
+
+.PermissionDialogButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.PermissionDialogButton:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.PermissionDialogButton--allow {
+  background: linear-gradient(135deg, #34d399, #10b981);
+  box-shadow: 0 10px 30px rgba(52, 211, 153, 0.35);
+}
+
+.PermissionDialogButton--always {
+  background: linear-gradient(135deg, #60a5fa, #3b82f6);
+  box-shadow: 0 10px 30px rgba(96, 165, 250, 0.35);
+  color: #0b1220;
+}
+
+.PermissionDialogButton--reject {
+  background: linear-gradient(135deg, #cbd5e1, #94a3b8);
+  box-shadow: 0 10px 30px rgba(148, 163, 184, 0.3);
+  color: #0b1220;
+}
+
+@keyframes permissionOverlayShow {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes permissionContentShow {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}

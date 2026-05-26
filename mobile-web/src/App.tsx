@@ -1,6 +1,12 @@
 import { FormEvent, useEffect, useMemo, useReducer, useState } from "react";
 import { ChatView } from "./components/ChatView";
-import { ProductShell } from "./components/ProductShell";
+import { InlinePermissionMessage } from "./components/InlinePermissionMessage";
+import { OpencodeChatHeader } from "./components/OpencodeChatHeader";
+import { OpencodeChatInput } from "./components/OpencodeChatInput";
+import { OpencodeChatMessage } from "./components/OpencodeChatMessage";
+import { OpencodeSidebar } from "./components/OpencodeSidebar";
+import { OpencodeWelcomePage } from "./components/OpencodeWelcomePage";
+import { RemoteSettingsDialog } from "./components/RemoteSettingsDialog";
 import { ToolActivity } from "./components/ToolActivity";
 import {
   approveCommand,
@@ -22,9 +28,18 @@ import {
   updateSshTarget
 } from "./api";
 import {
+  buildConversationTitleHint,
+  buildProductTimeline,
+  mapSessionToConversation,
+  type SessionMessageLike,
+  type ToolPartLike
+} from "./opencodeAdapter";
+import { buildTargetLabel, formatConnectionStatus } from "./productStatus";
+import {
   buildFeedbackReport,
   buildFinalAnswerReport,
   fallbackDiagnosticPresets,
+  type ChatItem,
   initialAppState,
   reduceEvent,
   resolveDiagnosticPresets,
@@ -32,9 +47,11 @@ import {
   selectExecutionStatus,
   selectFinalAnswer,
   selectToolActivities,
+  type ToolActivity as ToolActivityModel,
   withSseStatus
 } from "./state";
-import type { AgentTurnMode, AgentTurnResponse, ApprovalAction, DiagnosticKey, DiagnosticPreset, HealthResponse, PendingApproval, ServerEvent, SshCheckResponse } from "./types";
+import type { AgentTurnMode, AgentTurnResponse, ApprovalAction, DiagnosticKey, DiagnosticPreset, HealthResponse, Message, PendingApproval, ServerEvent, SshCheckResponse } from "./types";
+import { useProductSessions } from "./useProductSessions";
 
 const CONTINUATION_PROMPT = "请继续上一轮任务。";
 
@@ -78,15 +95,28 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [productSettingsOpen, setProductSettingsOpen] = useState(false);
+  const [isProductSidebarOpen, setIsProductSidebarOpen] = useState(true);
+  const [productLocalChatItems, setProductLocalChatItems] = useState<Record<string, ChatItem[]>>({});
+  const [productLocalToolActivities, setProductLocalToolActivities] = useState<Record<string, ToolActivityModel[]>>({});
   const [latestAgentTurnId, setLatestAgentTurnId] = useState<string>("");
   const route = globalThis.location?.pathname ?? "/web";
   const isDebugRoute = route.startsWith("/debug");
+  const productSessions = useProductSessions();
 
   useEffect(() => {
     if (route === "/") {
       window.history.replaceState({}, "", "/web");
     }
   }, [route]);
+
+  useEffect(() => {
+    if (isDebugRoute || !error) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setError(null), 4200);
+    return () => window.clearTimeout(timeout);
+  }, [error, isDebugRoute]);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,15 +159,17 @@ export default function App() {
         }
       }
 
-      try {
-        const session = await createSession();
-        if (!cancelled) {
-          setSessionId(session.id);
-          dispatch({ type: "event", event: { type: "session.updated", payload: session } });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(messageFromError(err));
+      if (isDebugRoute) {
+        try {
+          const session = await createSession();
+          if (!cancelled) {
+            setSessionId(session.id);
+            dispatch({ type: "event", event: { type: "session.updated", payload: session } });
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setError(messageFromError(err));
+          }
         }
       }
     }
@@ -147,7 +179,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken]);
+  }, [accessToken, isDebugRoute]);
 
   useEffect(() => {
     const target = state.connection.target;
@@ -161,6 +193,7 @@ export default function App() {
     const source = new EventSource(buildEventUrl(accessToken));
     const eventTypes: ServerEvent["type"][] = [
       "session.updated",
+      "session.deleted",
       "message.updated",
       "message.part.updated",
       "assistant.started",
@@ -169,6 +202,8 @@ export default function App() {
       "tool.stderr",
       "tool.completed",
       "tool.failed",
+      "agent.tool.completed",
+      "agent.tool.failed",
       "approval.asked",
       "approval.replied",
       "audit.updated",
@@ -182,6 +217,9 @@ export default function App() {
           setLatestAgentTurnId(turnId);
         }
         dispatch({ type: "event", event });
+        if (event.type === "session.updated" || event.type === "session.deleted") {
+          void productSessions.reloadSessions().catch((err) => setError(messageFromError(err)));
+        }
       } catch {
         dispatch({
           type: "event",
@@ -200,7 +238,7 @@ export default function App() {
       source.close();
       dispatch({ type: "sse", status: "disconnected" });
     };
-  }, [accessToken]);
+  }, [accessToken, productSessions.reloadSessions]);
 
   function handleAccessTokenSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -211,17 +249,17 @@ export default function App() {
     setError(null);
   }
 
-  const targetLabel = useMemo(() => {
-    const target = state.connection.target;
-    if (!target) {
-      return "SSH target unknown";
-    }
-    return `${target.user}@${target.host}:${target.port}`;
-  }, [state.connection.target]);
+  const targetLabel = useMemo(() => buildTargetLabel(state.connection.target), [state.connection.target]);
   const serviceLabel = health?.service || "unknown";
   const modelLabel = health?.model || "unknown";
   const executionStatus = useMemo(() => selectExecutionStatus(state, busy), [state, busy]);
-  const productConnectionStatus = `Agent Server ${state.connection.server} | SSE ${state.connection.sse} | Service ${serviceLabel} | Model ${modelLabel}`;
+  const productConnectionStatus = formatConnectionStatus({
+    server: state.connection.server,
+    sse: state.connection.sse,
+    service: serviceLabel,
+    model: modelLabel,
+    targetLabel
+  });
 
   const busyMessage = useMemo(() => {
     if (!busy) {
@@ -255,13 +293,8 @@ export default function App() {
   const hasRunningTool = toolActivities.some((activity) => ["running", "started", "updated", "pending", "queued", "in_progress"].includes(activity.status.toLowerCase()));
   const canStopAgentTurn = Boolean(latestAgentTurnId) && (busy === "agent" || state.pendingApprovals.length > 0 || hasRunningTool);
 
-  async function handleTargetSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const host = targetForm.host.trim();
-    const user = targetForm.user.trim();
-    const port = Number(targetForm.port);
-
+  async function saveTarget(input: { host: string; user: string; port: number }) {
+    const { host, user, port } = input;
     if (!host || !user || !Number.isInteger(port) || port < 1 || port > 65535) {
       setError("Enter a host, user, and port from 1 to 65535.");
       return;
@@ -282,6 +315,15 @@ export default function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function handleTargetSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await saveTarget({
+      host: targetForm.host.trim(),
+      user: targetForm.user.trim(),
+      port: Number(targetForm.port)
+    });
   }
 
   async function handleSshCheck() {
@@ -369,6 +411,21 @@ export default function App() {
         mode === "normal" ? undefined : { mode, retryTurnId: mode === "retry" ? latestAgentTurnId : undefined }
       );
       setLatestAgentTurnId(latestTurnIdFromResponse(response) || latestAgentTurnId);
+      response.executed_tools.forEach((tool, index) => {
+        dispatch({
+          type: "event",
+          event: {
+            type: tool.status === "failed" ? "tool.failed" : "tool.completed",
+            payload: {
+              id: `${response.turn_id}:tool:${index}`,
+              command: tool.command,
+              status: tool.status,
+              exit_code: tool.exit_code,
+              requires_approval: tool.requires_approval
+            }
+          }
+        });
+      });
       if (response.assistant_text.trim()) {
         dispatch({
           type: "event",
@@ -382,6 +439,72 @@ export default function App() {
         dispatch({ type: "event", event: { type: "approval.asked", payload: approval } });
       });
       setAgentMessage("");
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleProductSend(content: string, mode: AgentTurnMode = "normal") {
+    const trimmed = content.trim() || (mode === "continue" ? CONTINUATION_PROMPT : "");
+    if ((!trimmed && mode === "normal") || busy === "agent") {
+      return;
+    }
+
+    setBusy("agent");
+    setError(null);
+
+    let activeSessionId = productSessions.activeSessionId;
+    try {
+      if (!activeSessionId) {
+        const created = await productSessions.createConversation(buildConversationTitleHint(trimmed));
+        activeSessionId = created.id;
+        dispatch({ type: "event", event: { type: "session.updated", payload: created } });
+      }
+
+      if (trimmed) {
+        appendProductLocalChatItem(activeSessionId, {
+          id: `local:${activeSessionId}:user:${Date.now()}`,
+          role: "user",
+          text: trimmed,
+          createdAtMs: Date.now()
+        });
+      }
+
+      const response = await sendAgentTurn(
+        activeSessionId,
+        trimmed,
+        mode === "normal" ? undefined : { mode, retryTurnId: mode === "retry" ? latestAgentTurnId : undefined }
+      );
+      const nextTurnId = latestTurnIdFromResponse(response);
+      if (nextTurnId) {
+        setLatestAgentTurnId(nextTurnId);
+      }
+      appendProductLocalToolActivities(
+        activeSessionId,
+        response.executed_tools.map((tool, index) => ({
+          id: `${response.turn_id}:tool:${index}`,
+          command: tool.command,
+          status: tool.status,
+          exitCode: tool.exit_code,
+          requiresApproval: tool.requires_approval,
+          createdAtMs: Date.now() + index
+        }))
+      );
+      if (response.assistant_text.trim()) {
+        appendProductLocalChatItem(activeSessionId, {
+          id: `local:${activeSessionId}:assistant:${Date.now()}`,
+          role: "assistant",
+          status: response.status,
+          text: response.assistant_text,
+          createdAtMs: Date.now(),
+          isFinal: response.status !== "awaiting_approval"
+        });
+      }
+      response.pending_approvals.forEach((approval) => {
+        dispatch({ type: "event", event: { type: "approval.asked", payload: approval } });
+      });
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -412,6 +535,15 @@ export default function App() {
           type: "event",
           event: { type: "message.updated", payload: { role: "assistant", text: summary } }
         });
+        if (!isDebugRoute) {
+          appendProductLocalChatItem(result.approval.session_id, {
+            id: `local:${result.approval.session_id}:approval:${id}`,
+            role: "assistant",
+            text: summary,
+            createdAtMs: Date.now(),
+            isFinal: true
+          });
+        }
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -421,7 +553,7 @@ export default function App() {
   }
 
   async function handleStopAgentTurn() {
-    const activeSessionId = sessionId || state.activeSessionId;
+    const activeSessionId = isDebugRoute ? sessionId || state.activeSessionId : productSessions.activeSessionId;
     if (!activeSessionId || !latestAgentTurnId) {
       return;
     }
@@ -472,8 +604,7 @@ export default function App() {
   async function handleNewProductConversation() {
     setError(null);
     try {
-      const session = await createSession();
-      setSessionId(session.id);
+      const session = await productSessions.createConversation();
       dispatch({ type: "event", event: { type: "session.updated", payload: session } });
     } catch (err) {
       setError(messageFromError(err));
@@ -481,14 +612,47 @@ export default function App() {
   }
 
   function handleSelectProductConversation(selectedSessionId: string) {
-    const session = state.sessions.find((item) => item.id === selectedSessionId);
-    if (session) {
-      setSessionId(session.id);
-      dispatch({ type: "event", event: { type: "session.updated", payload: session } });
+    void productSessions.selectSession(selectedSessionId).catch((err) => setError(messageFromError(err)));
+  }
+
+  function appendProductLocalChatItem(sessionId: string, item: ChatItem) {
+    setProductLocalChatItems((current) => ({
+      ...current,
+      [sessionId]: [...(current[sessionId] ?? []), item]
+    }));
+  }
+
+  function appendProductLocalToolActivities(sessionId: string, activities: ToolActivityModel[]) {
+    if (activities.length === 0) {
+      return;
     }
+
+    setProductLocalToolActivities((current) => ({
+      ...current,
+      [sessionId]: [...(current[sessionId] ?? []), ...activities]
+    }));
   }
 
   if (!isDebugRoute) {
+    const activeProductSessionId = productSessions.activeSessionId;
+    const historicalChatItems = activeProductSessionId ? messagesToChatItems(productSessions.activeMessages) : [];
+    const scopedLocalChatItems = activeProductSessionId
+      ? dedupeLocalChatItems(productLocalChatItems[activeProductSessionId] ?? [], historicalChatItems)
+      : [];
+    const scopedToolActivities = activeProductSessionId
+      ? dedupeToolActivities([...(productLocalToolActivities[activeProductSessionId] ?? []), ...toolActivities])
+      : [];
+    const productTimeline = activeProductSessionId
+      ? buildProductTimeline({
+          sessionId: activeProductSessionId,
+          activeChatItems: [...historicalChatItems, ...scopedLocalChatItems],
+          pendingApprovals: state.pendingApprovals,
+          activeToolActivities: scopedToolActivities,
+          isLoading: busy === "agent"
+        })
+      : [];
+    const conversations = productSessions.sessions.map(mapSessionToConversation);
+
     return (
       <main className="product-entry">
         {busyMessage ? (
@@ -515,125 +679,84 @@ export default function App() {
           />
         ) : null}
 
-        <ProductShell
-          sessions={state.sessions}
-          activeSessionId={sessionId || state.activeSessionId}
-          connectionStatusText={productConnectionStatus}
-          executionStatus={{
-            label: executionStatus.label,
-            tone: executionStatus.state
-          }}
-          targetLabel={targetLabel}
-          messages={chatItems}
-          pendingApprovals={state.pendingApprovals}
-          toolActivities={toolActivities}
-          finalAnswer={finalAnswer?.text}
-          composer={{
-            value: agentMessage,
-            busy: busy === "agent",
-            onChange: setAgentMessage,
-            placeholder: "Ask the remote Linux device..."
-          }}
-          onSend={() => void handleAgentTurn()}
-          onContinue={() => void handleAgentTurn(undefined, "continue")}
-          onRetry={() => void handleAgentTurn(undefined, "retry")}
-          onStop={() => void handleStopAgentTurn()}
-          canStop={canStopAgentTurn}
-          controlsBusy={busy === "agent-control"}
-          continueDisabled={busy !== null}
-          retryDisabled={busy !== null}
-          onNewConversation={() => void handleNewProductConversation()}
-          onSelectConversation={handleSelectProductConversation}
-          onApproveApproval={(approvalId, action) => void handleApproval(approvalId, action)}
-          onRejectApproval={(approvalId, action) => void handleApproval(approvalId, action)}
-          onOpenSettings={() => setProductSettingsOpen(true)}
-          onCopyFinalAnswer={() => void handleCopyFinalAnswer()}
-          onCopyFullReport={() => void handleCopyFullReport()}
-        />
-
-        {productSettingsOpen ? (
-          <section className="product-settings" role="dialog" aria-label="Server settings">
-            <div className="product-settings__panel">
-              <div className="section-heading">
-                <div>
-                  <h2>Server settings</h2>
-                  <span>{targetLabel}</span>
-                </div>
-                <button className="secondary-button compact-button" type="button" onClick={() => setProductSettingsOpen(false)}>
-                  Close
-                </button>
-              </div>
-
-              <div className="status-grid product-settings__status" aria-label="Connection status">
-                <StatusPill label="Agent Server" value={state.connection.server} />
-                <StatusPill label="SSE" value={state.connection.sse} />
-                <StatusPill label="Service" value={serviceLabel} />
-                <StatusPill label="Model" value={modelLabel} />
-                <StatusPill label="SSH target" value={targetLabel} />
-              </div>
-
-              <form className="target-form product-settings__form" onSubmit={handleTargetSave}>
-                <label>
-                  Host
-                  <input
-                    autoCapitalize="none"
-                    autoComplete="off"
-                    autoCorrect="off"
-                    onChange={(event) => setTargetForm((current) => ({ ...current, host: event.target.value }))}
-                    placeholder="192.168.30.244"
-                    spellCheck={false}
-                    type="text"
-                    value={targetForm.host}
-                  />
-                </label>
-                <label>
-                  User
-                  <input
-                    autoCapitalize="none"
-                    autoComplete="username"
-                    autoCorrect="off"
-                    onChange={(event) => setTargetForm((current) => ({ ...current, user: event.target.value }))}
-                    placeholder="root"
-                    spellCheck={false}
-                    type="text"
-                    value={targetForm.user}
-                  />
-                </label>
-                <label>
-                  Port
-                  <input
-                    inputMode="numeric"
-                    max="65535"
-                    min="1"
-                    onChange={(event) => setTargetForm((current) => ({ ...current, port: event.target.value }))}
-                    type="number"
-                    value={targetForm.port}
-                  />
-                </label>
-                <button className="primary-button" disabled={busy !== null} type="submit">
-                  {busy === "target" ? "Saving" : "Save target"}
-                </button>
-              </form>
-
-              <div className="ssh-check-row product-settings__check">
-                <button className="secondary-button" disabled={busy !== null} onClick={handleSshCheck} type="button">
-                  {busy === "ssh-check" ? "Checking" : "Check SSH"}
-                </button>
-                {sshCheck ? (
-                  <div className={`ssh-check-result ${sshCheck.status}`} aria-live="polite">
-                    <strong>{sshCheck.status}</strong>
-                    <span>{formatSshCheckResult(sshCheck)}</span>
-                  </div>
-                ) : (
-                  <div className="ssh-check-result idle" aria-live="polite">
-                    <strong>not checked</strong>
-                    <span>Run a target reachability check.</span>
-                  </div>
-                )}
-              </div>
+        <div className="opencode-product-shell">
+          <OpencodeSidebar
+            conversations={conversations}
+            currentConversationId={activeProductSessionId ?? ""}
+            onSelectConversation={handleSelectProductConversation}
+            onNewConversation={() => void handleNewProductConversation()}
+            onDeleteConversation={(id) => void productSessions.deleteConversation(id).catch((err) => setError(messageFromError(err)))}
+            isOpen={isProductSidebarOpen}
+          />
+          <section className="opencode-product-workspace">
+            <OpencodeChatHeader
+              onStop={() => void handleStopAgentTurn()}
+              messageCount={productTimeline.filter((item) => item.kind === "message").length}
+              onToggleSidebar={() => setIsProductSidebarOpen((current) => !current)}
+              isSidebarOpen={isProductSidebarOpen}
+              onOpenRemoteSettings={() => setProductSettingsOpen(true)}
+              connectionStatusText={productConnectionStatus}
+              isSending={busy === "agent" || canStopAgentTurn}
+            />
+            <div className={`opencode-product-status opencode-product-status--${executionStatus.state}`} role="status" aria-label="执行状态">
+              {executionStatus.label}
             </div>
+            <section className="opencode-product-main" aria-label="远程 Linux 对话工作区">
+              {productTimeline.length === 0 ? (
+                <OpencodeWelcomePage onSuggestedQuestion={(question) => void handleProductSend(question)} />
+              ) : (
+                <div className="opencode-product-timeline" aria-live="polite">
+                  {productTimeline.map((item) => {
+                    if (item.kind === "message") {
+                      return <OpencodeChatMessage key={item.id} message={item.message} />;
+                    }
+                    if (item.kind === "permission") {
+                      return (
+                        <InlinePermissionMessage
+                          key={item.id}
+                          permission={item.permission}
+                          onRespond={(response) => handleApproval(item.permission.id, mapInlinePermissionResponse(response))}
+                        />
+                      );
+                    }
+                    if (item.kind === "tool") {
+                      return (
+                        <OpencodeChatMessage
+                          key={item.id}
+                          message={toolMessageFromPart(item.sessionId, item.tool)}
+                        />
+                      );
+                    }
+                    return <OpencodeChatMessage key={item.id} message={loadingMessage(item.sessionId)} />;
+                  })}
+                </div>
+              )}
+            </section>
+            <OpencodeChatInput
+              onSendMessage={(content) => void handleProductSend(content)}
+              onStop={() => void handleStopAgentTurn()}
+              disabled={Boolean(productSessions.error)}
+              isSending={busy === "agent"}
+            />
           </section>
-        ) : null}
+        </div>
+
+        <RemoteSettingsDialog
+          open={productSettingsOpen}
+          target={state.connection.target}
+          status={{
+            server: state.connection.server,
+            sse: state.connection.sse,
+            service: serviceLabel,
+            model: modelLabel,
+            targetLabel
+          }}
+          sshCheck={sshCheck}
+          busy={busy !== null}
+          onOpenChange={setProductSettingsOpen}
+          onSaveTarget={saveTarget}
+          onCheckSsh={handleSshCheck}
+        />
       </main>
     );
   }
@@ -971,6 +1094,97 @@ function debugApprovalTargetLabel(approval: PendingApproval): string {
     return `${approval.target_label} (${approval.target})`;
   }
   return approval.target_label || approval.target || "current server target";
+}
+
+function messagesToChatItems(messages: Message[]): ChatItem[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "user" && message.role !== "assistant") {
+      return [];
+    }
+
+    const text = message.parts
+      .map((part) => (part.kind === "text" && typeof part.text === "string" ? part.text : ""))
+      .filter(Boolean)
+      .join("\n");
+
+    if (!text.trim()) {
+      return [];
+    }
+
+    return [{
+      id: message.id,
+      role: message.role,
+      text,
+      createdAtMs: message.created_at_ms,
+      isFinal: message.role === "assistant" ? true : undefined
+    }];
+  });
+}
+
+function dedupeLocalChatItems(localItems: ChatItem[], historicalItems: ChatItem[]): ChatItem[] {
+  return localItems.filter((localItem) =>
+    !historicalItems.some(
+      (historicalItem) => historicalItem.role === localItem.role && historicalItem.text.trim() === localItem.text.trim()
+    )
+  );
+}
+
+function dedupeToolActivities(activities: ToolActivityModel[]): ToolActivityModel[] {
+  const seen = new Set<string>();
+  return activities.filter((activity) => {
+    const key = [
+      activity.command,
+      activity.status,
+      activity.exitCode ?? "",
+      activity.durationMs ?? ""
+    ].join("\u0000");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function mapInlinePermissionResponse(response: "once" | "always" | "reject"): ApprovalAction {
+  switch (response) {
+    case "once":
+      return "approve_once";
+    case "always":
+      return "approve_session";
+    case "reject":
+      return "reject_stop";
+    default:
+      return "reject_stop";
+  }
+}
+
+function toolMessageFromPart(sessionId: string, tool: ToolPartLike): SessionMessageLike {
+  return {
+    info: {
+      id: `tool-message:${tool.id}`,
+      sessionID: sessionId,
+      role: "assistant",
+      time: {
+        created: tool.time.created
+      }
+    },
+    parts: [tool]
+  };
+}
+
+function loadingMessage(sessionId: string): SessionMessageLike {
+  return {
+    info: {
+      id: `loading:${sessionId}`,
+      sessionID: sessionId,
+      role: "assistant",
+      time: {
+        created: Date.now()
+      }
+    },
+    parts: []
+  };
 }
 
 function StatusPill({ label, value }: { label: string; value: string }) {

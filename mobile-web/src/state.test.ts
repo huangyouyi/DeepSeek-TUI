@@ -226,6 +226,120 @@ describe("reduceEvent", () => {
 
     expect(next.timeline[0].text).toBe("sh -c 'echo out; echo err >&2'\nfailed\nout\nerr");
   });
+
+  it("removes a deleted session from sessions", () => {
+    const state = {
+      ...initialAppState,
+      sessions: [
+        { id: "session-1", title: "Keep", created_at_ms: 100, updated_at_ms: 100 },
+        { id: "session-2", title: "Delete", created_at_ms: 200, updated_at_ms: 200 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { id: "session-2", deleted_at_ms: 300 }
+    });
+
+    expect(next.sessions.map((session) => session.id)).toEqual(["session-1"]);
+    expect(next.timeline[0]).toMatchObject({
+      kind: "session",
+      title: "Session deleted",
+      text: "session-2"
+    });
+  });
+
+  it("clears active session when the deleted session is active", () => {
+    const state = {
+      ...initialAppState,
+      activeSessionId: "session-2",
+      sessions: [
+        { id: "session-2", title: "Delete", created_at_ms: 200, updated_at_ms: 200 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { session_id: "session-2" }
+    });
+
+    expect(next.activeSessionId).toBeUndefined();
+  });
+
+  it("does not switch the active session for background session updates", () => {
+    const state = {
+      ...initialAppState,
+      activeSessionId: "session-1",
+      sessions: [
+        { id: "session-1", title: "Active", created_at_ms: 100, updated_at_ms: 100 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.updated",
+      payload: { id: "session-2", title: "Background", created_at_ms: 200, updated_at_ms: 200 }
+    });
+
+    expect(next.activeSessionId).toBe("session-1");
+    expect(next.sessions.map((session) => session.id)).toContain("session-2");
+  });
+
+  it("clears active chat and tool UI state when the deleted session is active", () => {
+    const state = {
+      ...initialAppState,
+      activeSessionId: "session-2",
+      chatItems: [
+        { id: "chat-1", role: "assistant" as const, text: "old answer", createdAtMs: 100 }
+      ],
+      toolActivities: [
+        { id: "tool-1", status: "completed", command: "uptime", createdAtMs: 100 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { id: "session-2" }
+    });
+
+    expect(next.chatItems).toEqual([]);
+    expect(next.toolActivities).toEqual([]);
+  });
+
+  it("removes pending approvals and stored messages for a deleted session", () => {
+    const state = {
+      ...initialAppState,
+      pendingApprovals: [
+        { id: "approval-1", session_id: "session-1", command: "uptime", created_at_ms: 100, status: "pending" },
+        { id: "approval-2", session_id: "session-2", command: "df -h", created_at_ms: 200, status: "pending" }
+      ],
+      messages: [
+        { id: "message-1", session_id: "session-1", role: "user", created_at_ms: 100, parts: [] },
+        { id: "message-2", session_id: "session-2", role: "assistant", created_at_ms: 200, parts: [] }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { id: "session-2", removed_pending_approvals: 1 }
+    });
+
+    expect(next.pendingApprovals.map((approval) => approval.id)).toEqual(["approval-1"]);
+    expect(next.messages.map((message) => message.id)).toEqual(["message-1"]);
+  });
+
+  it("does not crash when a session deletion payload is malformed", () => {
+    const state = {
+      ...initialAppState,
+      sessions: [
+        { id: "session-1", title: "Keep", created_at_ms: 100, updated_at_ms: 100 }
+      ]
+    };
+
+    expect(() => reduceEvent(state, {
+      type: "session.deleted",
+      payload: null
+    })).not.toThrow();
+  });
 });
 
 describe("buildFeedbackReport", () => {
@@ -418,6 +532,35 @@ describe("product view selectors", () => {
     ]);
     expect(selectFinalAnswer(state)?.text).toBe("The command finished.");
     expect(buildFinalAnswerReport(state)).toBe("The command finished.");
+  });
+
+  it("matches legacy tool starts with agent tool completion events", () => {
+    const started = reduceEvent(initialAppState, {
+      type: "tool.started",
+      payload: {
+        command: "uname -a"
+      }
+    });
+    const completed = reduceEvent(started, {
+      type: "agent.tool.completed",
+      payload: {
+        command: "uname -a",
+        output: "Linux test-host",
+        exit_code: 0
+      }
+    });
+
+    expect(selectToolActivities(completed)).toHaveLength(1);
+    expect(selectToolActivities(completed)[0]).toMatchObject({
+      id: "command:uname -a",
+      status: "completed",
+      output: "Linux test-host",
+      exitCode: 0
+    });
+    expect(selectExecutionStatus(completed, null)).toEqual({
+      state: "idle",
+      label: "空闲"
+    });
   });
 
   it("does not turn tool-only message parts into chat or final answer text", () => {

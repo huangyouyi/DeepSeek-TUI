@@ -265,7 +265,7 @@ class FakeServer(BaseHTTPRequestHandler):
                     ("dns", "DNS", "解析"),
                     "getent hosts deepseek.com || nslookup deepseek.com || cat /etc/resolv.conf",
                     "deepseek.com has address 104.18.0.1\nnameserver 192.168.30.1",
-                    "结论：DNS 解析看起来正常，详情已放在工具活动里。",
+                    "结论：DNS 解析看起来正常，详情已在对话中以内联工具结果展示。",
                 ),
                 (
                     "docker",

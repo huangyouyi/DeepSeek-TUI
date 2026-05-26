@@ -10,10 +10,14 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.7",
-    "typescript": "^5.7.2",
+    "dompurify": "^3.4.5",
+    "lucide-react": "^1.16.0",
+    "marked": "^15.0.12",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "sonner": "^2.0.7",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
   },
   "devDependencies": {
     "@testing-library/react": "^16.1.0",

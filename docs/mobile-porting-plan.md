@@ -433,6 +433,7 @@ MVP 底线：用户意图理解、诊断计划、bootstrap、SSH/PowerShell、�
 - Shell/PowerShell 执行只应在显式 approval nonce 和 policy 检查后开放；默认 runner 仍应阻止 raw shell execution。
 - Maintenance execution、package install execution 和真实 browser engine 仍未启用；browser extraction 需要真实 `BrowserEngine`。
 - Linux 可以测试 Rust API、fake transport、runner HTTP handler、auth、pairing 和 scaffold；不能证明 SwiftUI、Keychain、SQLite sandbox、Xcode package resolution、simulator launch、signing、local network permission 或真机行为。
+- Mobile Web 当前采用明确的 `/web` 与 `/debug` 分工：`/web` 是 formal chat UI，`/debug` 是 raw test/diagnostics UI。工具执行和审批在 chat timeline 中 inline 渲染；browser 是 thin client，只发送用户意图和渲染 server state；Rust server 控制 remote execution、approval policy、SSH/model config、audit 和 message/tool persistence。除非有单独接受的人工真机/手机运行证据，相关结论仍只属于 Linux/LAN Web evidence。
 
 ## MVP 改造计划
 
@@ -523,6 +524,7 @@ MVP 底线：用户意图理解、诊断计划、bootstrap、SSH/PowerShell、�
 | W1-W3 | done | Linux LAN runner evidence harness、plan draft parser、Linux validation entrypoint 已可支持本地证据工作流。 |
 | W4 | open | 真实 macOS/iOS/Windows 证据仍依赖硬件和真实平台执行。 |
 | W5 | done/limited | Linux mobile Web SSH simulator 可做 LAN/Web UI 形态验证，但不能关闭真实 iOS、macOS、Windows 或真实 runner 证据项。 |
+| W6 | done/limited | `/web` 已定位为 formal chat UI，`/debug` 保留为 raw test/diagnostics UI；tools/approvals inline 出现在 chat timeline，browser thin client 不直接执行 SSH/shell/model-secret 工作，Rust server 继续控制 remote execution 和 approval policy。证据边界仍是 Linux/LAN Web，除非人工用户运行测试提供并接受更多平台证据。 |
 
 ## 任务树
 

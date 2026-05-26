@@ -32,7 +32,7 @@ fn agent_chat_contract_turn_response_uses_stable_json_fields() {
             status: "pending_approval".to_string(),
         }],
         pending_approvals: vec![PendingApproval::remote_shell(
-            "approval-1".to_string(),
+            "approval-turn-response-contract".to_string(),
             "session-1".to_string(),
             "systemctl restart ssh".to_string(),
             Some("/".to_string()),
@@ -56,7 +56,7 @@ fn agent_chat_contract_turn_response_uses_stable_json_fields() {
                 "status": "pending_approval"
             }],
             "pending_approvals": [{
-                "id": "approval-1",
+                "id": "approval-turn-response-contract",
                 "session_id": "session-1",
                 "command": "systemctl restart ssh",
                 "cwd": "/",
