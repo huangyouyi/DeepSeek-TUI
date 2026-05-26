@@ -226,6 +226,81 @@ describe("reduceEvent", () => {
 
     expect(next.timeline[0].text).toBe("sh -c 'echo out; echo err >&2'\nfailed\nout\nerr");
   });
+
+  it("removes a deleted session from sessions", () => {
+    const state = {
+      ...initialAppState,
+      sessions: [
+        { id: "session-1", title: "Keep", created_at_ms: 100, updated_at_ms: 100 },
+        { id: "session-2", title: "Delete", created_at_ms: 200, updated_at_ms: 200 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { id: "session-2", deleted_at_ms: 300 }
+    });
+
+    expect(next.sessions.map((session) => session.id)).toEqual(["session-1"]);
+    expect(next.timeline[0]).toMatchObject({
+      kind: "session",
+      title: "Session deleted",
+      text: "session-2"
+    });
+  });
+
+  it("clears active session when the deleted session is active", () => {
+    const state = {
+      ...initialAppState,
+      activeSessionId: "session-2",
+      sessions: [
+        { id: "session-2", title: "Delete", created_at_ms: 200, updated_at_ms: 200 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { session_id: "session-2" }
+    });
+
+    expect(next.activeSessionId).toBeUndefined();
+  });
+
+  it("removes pending approvals and stored messages for a deleted session", () => {
+    const state = {
+      ...initialAppState,
+      pendingApprovals: [
+        { id: "approval-1", session_id: "session-1", command: "uptime", created_at_ms: 100, status: "pending" },
+        { id: "approval-2", session_id: "session-2", command: "df -h", created_at_ms: 200, status: "pending" }
+      ],
+      messages: [
+        { id: "message-1", session_id: "session-1", role: "user", created_at_ms: 100, parts: [] },
+        { id: "message-2", session_id: "session-2", role: "assistant", created_at_ms: 200, parts: [] }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { id: "session-2", removed_pending_approvals: 1 }
+    });
+
+    expect(next.pendingApprovals.map((approval) => approval.id)).toEqual(["approval-1"]);
+    expect(next.messages.map((message) => message.id)).toEqual(["message-1"]);
+  });
+
+  it("does not crash when a session deletion payload is malformed", () => {
+    const state = {
+      ...initialAppState,
+      sessions: [
+        { id: "session-1", title: "Keep", created_at_ms: 100, updated_at_ms: 100 }
+      ]
+    };
+
+    expect(() => reduceEvent(state, {
+      type: "session.deleted",
+      payload: null
+    })).not.toThrow();
+  });
 });
 
 describe("buildFeedbackReport", () => {
