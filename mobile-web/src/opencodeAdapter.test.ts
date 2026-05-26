@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildProductTimeline,
   buildConversationTitleHint,
   buildTimelineItems,
   mapApprovalToPermission,
@@ -193,5 +194,70 @@ describe("opencodeAdapter", () => {
 
     expect(timeline.map((item) => item.id)).toEqual(["message:active-chat", "permission:active-approval", "tool:active-tool"]);
     expect(timeline.every((item) => item.sessionId === "active-session")).toBe(true);
+  });
+
+  it("builds a product timeline from active items and filtered global approvals", () => {
+    const timeline = buildProductTimeline({
+      sessionId: "active-session",
+      activeChatItems: [
+        { id: "chat-2", role: "assistant", text: "second", createdAtMs: 30 },
+        { id: "chat-1", role: "user", text: "first", createdAtMs: 10 }
+      ],
+      activeToolActivities: [{ id: "tool-1", status: "running", command: "uptime", createdAtMs: 25 }],
+      pendingApprovals: [
+        {
+          id: "approval-1",
+          session_id: "active-session",
+          command: "uptime",
+          created_at_ms: 20,
+          status: "pending"
+        },
+        {
+          id: "approval-other",
+          session_id: "other-session",
+          command: "ignored",
+          created_at_ms: 15,
+          status: "pending"
+        }
+      ],
+      isLoading: true
+    });
+
+    expect(timeline.map((item) => item.kind)).toEqual(["message", "permission", "tool", "message", "loading"]);
+    expect(timeline.map((item) => item.id)).toEqual([
+      "message:chat-1",
+      "permission:approval-1",
+      "tool:tool-1",
+      "message:chat-2",
+      "loading:active-session"
+    ]);
+    expect(timeline.every((item) => item.sessionId === "active-session")).toBe(true);
+  });
+
+  it("sorts equal timestamp product timeline items stably by id", () => {
+    const timeline = buildProductTimeline({
+      sessionId: "session-1",
+      activeChatItems: [
+        { id: "z-chat", role: "assistant", text: "chat", createdAtMs: 10 },
+        { id: "a-chat", role: "user", text: "chat", createdAtMs: 10 }
+      ],
+      activeToolActivities: [{ id: "b-tool", status: "completed", command: "date", createdAtMs: 10 }],
+      pendingApprovals: [
+        {
+          id: "c-approval",
+          session_id: "session-1",
+          command: "date",
+          created_at_ms: 10,
+          status: "pending"
+        }
+      ]
+    });
+
+    expect(timeline.map((item) => item.id)).toEqual([
+      "message:a-chat",
+      "message:z-chat",
+      "permission:c-approval",
+      "tool:b-tool"
+    ]);
   });
 });

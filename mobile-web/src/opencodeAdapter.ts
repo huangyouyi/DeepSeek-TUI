@@ -115,6 +115,12 @@ export type TimelineItemLike =
       createdAtMs: number;
       sessionId: string;
       tool: ToolPartLike;
+    }
+  | {
+      id: string;
+      kind: "loading";
+      createdAtMs: number;
+      sessionId: string;
     };
 
 export type BuildTimelineInput = {
@@ -122,6 +128,7 @@ export type BuildTimelineInput = {
   activeChatItems?: ChatItem[];
   pendingApprovals?: PendingApproval[];
   activeToolActivities?: ToolActivity[];
+  isLoading?: boolean;
 };
 
 export function mapSessionToConversation(session: SessionSummary): Conversation {
@@ -259,6 +266,24 @@ export function buildTimelineItems(input: BuildTimelineInput): TimelineItemLike[
     const byTime = left.createdAtMs - right.createdAtMs;
     return byTime === 0 ? left.id.localeCompare(right.id) : byTime;
   });
+}
+
+export function buildProductTimeline(input: BuildTimelineInput): TimelineItemLike[] {
+  const items = buildTimelineItems(input);
+
+  if (!input.isLoading) {
+    return items;
+  }
+
+  return [
+    ...items,
+    {
+      id: `loading:${input.sessionId}`,
+      kind: "loading",
+      createdAtMs: Number.MAX_SAFE_INTEGER,
+      sessionId: input.sessionId
+    }
+  ];
 }
 
 function normalizeToolStatus(status: string): ToolVisualStatus {
