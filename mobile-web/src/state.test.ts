@@ -266,6 +266,27 @@ describe("reduceEvent", () => {
     expect(next.activeSessionId).toBeUndefined();
   });
 
+  it("clears active chat and tool UI state when the deleted session is active", () => {
+    const state = {
+      ...initialAppState,
+      activeSessionId: "session-2",
+      chatItems: [
+        { id: "chat-1", role: "assistant" as const, text: "old answer", createdAtMs: 100 }
+      ],
+      toolActivities: [
+        { id: "tool-1", status: "completed", command: "uptime", createdAtMs: 100 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.deleted",
+      payload: { id: "session-2" }
+    });
+
+    expect(next.chatItems).toEqual([]);
+    expect(next.toolActivities).toEqual([]);
+  });
+
   it("removes pending approvals and stored messages for a deleted session", () => {
     const state = {
       ...initialAppState,

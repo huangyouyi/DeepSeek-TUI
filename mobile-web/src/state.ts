@@ -144,12 +144,16 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
         };
       }
 
+      const wasActiveSession = state.activeSessionId === sessionId;
+
       return {
         ...state,
-        activeSessionId: state.activeSessionId === sessionId ? undefined : state.activeSessionId,
+        activeSessionId: wasActiveSession ? undefined : state.activeSessionId,
         sessions: state.sessions.filter((session) => session.id !== sessionId),
         messages: state.messages.filter((message) => message.session_id !== sessionId),
         pendingApprovals: state.pendingApprovals.filter((approval) => approval.session_id !== sessionId),
+        chatItems: wasActiveSession ? [] : state.chatItems,
+        toolActivities: wasActiveSession ? [] : state.toolActivities,
         timeline: prependTimeline(state.timeline, {
           kind: "session",
           title: "Session deleted",
