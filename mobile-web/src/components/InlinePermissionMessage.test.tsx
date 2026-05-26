@@ -23,6 +23,14 @@ const bashPermission: PermissionLike = {
   }
 };
 
+const formattedCreatedAt = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit"
+}).format(new Date(bashPermission.time.created));
+
 describe("InlinePermissionMessage", () => {
   it("renders bash approval with three actions and prefixed commands", () => {
     const { container } = render(<InlinePermissionMessage permission={bashPermission} onRespond={vi.fn()} />);
@@ -31,11 +39,21 @@ describe("InlinePermissionMessage", () => {
     expect(screen.getByText("bash")).toBeTruthy();
     expect(screen.getByText("会话 session-1")).toBeTruthy();
     expect(screen.getByText("Bash 命令执行请求")).toBeTruthy();
+    expect(screen.getByText(formattedCreatedAt)).toBeTruthy();
     expect(screen.getByText("Lists working directory contents")).toBeTruthy();
     expect(container.querySelector("pre")?.textContent).toBe("$ pwd\n$ ls -la");
     expect(screen.getByRole("button", { name: "仅这次执行" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "本会话都允许" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "拒绝并停止" })).toBeTruthy();
+  });
+
+  it("maps 仅这次执行 to onRespond(\"once\")", async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined);
+    render(<InlinePermissionMessage permission={bashPermission} onRespond={onRespond} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "仅这次执行" }));
+
+    await waitFor(() => expect(onRespond).toHaveBeenCalledWith("once"));
   });
 
   it("maps 本会话都允许 to onRespond(\"always\")", async () => {
@@ -45,6 +63,15 @@ describe("InlinePermissionMessage", () => {
     fireEvent.click(screen.getByRole("button", { name: "本会话都允许" }));
 
     await waitFor(() => expect(onRespond).toHaveBeenCalledWith("always"));
+  });
+
+  it("maps 拒绝并停止 to onRespond(\"reject\")", async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined);
+    render(<InlinePermissionMessage permission={bashPermission} onRespond={onRespond} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "拒绝并停止" }));
+
+    await waitFor(() => expect(onRespond).toHaveBeenCalledWith("reject"));
   });
 
   it("shows an inline error if onRespond rejects", async () => {
