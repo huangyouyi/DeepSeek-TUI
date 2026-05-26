@@ -403,6 +403,7 @@ describe("App opencode web integration", () => {
       const bodies = fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/approvals/"));
       expect(bodies).toHaveLength(1);
     });
+    expect(await screen.findByText("Accepted.")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "本会话都允许" })[0]);
     await waitFor(() => {
       const bodies = fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/approvals/"));
@@ -438,6 +439,13 @@ describe("App opencode web integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
 
     expect(await screen.findByText("df -h")).toBeTruthy();
+    MockEventSource.instances[0].onmessage?.(new MessageEvent("message", {
+      data: JSON.stringify({
+        type: "tool.completed",
+        payload: { command: "df -h", status: "completed", exit_code: 0 }
+      })
+    }));
+    await waitFor(() => expect(screen.getAllByText("df -h")).toHaveLength(1));
     expect(screen.queryByRole("region", { name: "Tool activity" })).toBeNull();
     expect(screen.queryByText("Tool Activity")).toBeNull();
   });

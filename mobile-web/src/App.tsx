@@ -535,6 +535,15 @@ export default function App() {
           type: "event",
           event: { type: "message.updated", payload: { role: "assistant", text: summary } }
         });
+        if (!isDebugRoute) {
+          appendProductLocalChatItem(result.approval.session_id, {
+            id: `local:${result.approval.session_id}:approval:${id}`,
+            role: "assistant",
+            text: summary,
+            createdAtMs: Date.now(),
+            isFinal: true
+          });
+        }
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -631,7 +640,7 @@ export default function App() {
       ? dedupeLocalChatItems(productLocalChatItems[activeProductSessionId] ?? [], historicalChatItems)
       : [];
     const scopedToolActivities = activeProductSessionId
-      ? [...(productLocalToolActivities[activeProductSessionId] ?? []), ...toolActivities]
+      ? dedupeToolActivities([...(productLocalToolActivities[activeProductSessionId] ?? []), ...toolActivities])
       : [];
     const productTimeline = activeProductSessionId
       ? buildProductTimeline({
@@ -1118,6 +1127,23 @@ function dedupeLocalChatItems(localItems: ChatItem[], historicalItems: ChatItem[
       (historicalItem) => historicalItem.role === localItem.role && historicalItem.text.trim() === localItem.text.trim()
     )
   );
+}
+
+function dedupeToolActivities(activities: ToolActivityModel[]): ToolActivityModel[] {
+  const seen = new Set<string>();
+  return activities.filter((activity) => {
+    const key = [
+      activity.command,
+      activity.status,
+      activity.exitCode ?? "",
+      activity.durationMs ?? ""
+    ].join("\u0000");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function mapInlinePermissionResponse(response: "once" | "always" | "reject"): ApprovalAction {
