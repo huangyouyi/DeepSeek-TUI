@@ -21,7 +21,9 @@ describe("opencodeAdapter", () => {
   it("builds first-message title hints", () => {
     expect(buildConversationTitleHint("### 检查网络\n第二行")).toBe("检查网络");
     expect(buildConversationTitleHint("  ##   spaced    heading   \nnext")).toBe("spaced heading");
+    expect(buildConversationTitleHint("a".repeat(32))).toBe("a".repeat(32));
     expect(buildConversationTitleHint("a".repeat(40))).toBe(`${"a".repeat(29)}...`);
+    expect(buildConversationTitleHint(`### ${"b".repeat(40)}\n${"c".repeat(40)}`)).toBe(`${"b".repeat(29)}...`);
   });
 
   it("maps pending approvals to permission cards", () => {
@@ -101,6 +103,15 @@ describe("opencodeAdapter", () => {
         createdAtMs: 2
       }).state.status
     ).toBe("error");
+
+    expect(
+      mapToolActivityToToolPart({
+        id: "tool-unknown",
+        status: "unexpected",
+        command: "date",
+        createdAtMs: 3
+      }).state.status
+    ).toBe("updated");
   });
 
   it("maps chat items to session messages with text parts", () => {
@@ -131,7 +142,7 @@ describe("opencodeAdapter", () => {
   it("builds active-session timeline items in chronological order", () => {
     const timeline = buildTimelineItems({
       sessionId: "session-1",
-      chatItems: [
+      activeChatItems: [
         { id: "chat-2", role: "assistant", text: "second", createdAtMs: 30 },
         { id: "chat-1", role: "user", text: "first", createdAtMs: 10 }
       ],
@@ -151,9 +162,36 @@ describe("opencodeAdapter", () => {
           status: "pending"
         }
       ],
-      toolActivities: [{ id: "tool-1", status: "completed", command: "uptime", createdAtMs: 25 }]
+      activeToolActivities: [{ id: "tool-1", status: "completed", command: "uptime", createdAtMs: 25 }]
     });
 
     expect(timeline.map((item) => item.id)).toEqual(["message:chat-1", "permission:approval-1", "tool:tool-1", "message:chat-2"]);
+  });
+
+  it("documents active timeline inputs while filtering global approvals", () => {
+    const timeline = buildTimelineItems({
+      sessionId: "active-session",
+      activeChatItems: [{ id: "active-chat", role: "user", text: "active", createdAtMs: 10 }],
+      activeToolActivities: [{ id: "active-tool", status: "running", command: "uptime", createdAtMs: 30 }],
+      pendingApprovals: [
+        {
+          id: "active-approval",
+          session_id: "active-session",
+          command: "uptime",
+          created_at_ms: 20,
+          status: "pending"
+        },
+        {
+          id: "other-approval",
+          session_id: "other-session",
+          command: "ignored",
+          created_at_ms: 25,
+          status: "pending"
+        }
+      ]
+    });
+
+    expect(timeline.map((item) => item.id)).toEqual(["message:active-chat", "permission:active-approval", "tool:active-tool"]);
+    expect(timeline.every((item) => item.sessionId === "active-session")).toBe(true);
   });
 });

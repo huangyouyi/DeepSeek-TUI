@@ -50,7 +50,7 @@ export type ToolPartLike = {
   tool: "bash";
   title: string;
   state: {
-    status: string;
+    status: ToolVisualStatus;
     input: {
       command: string;
     };
@@ -68,6 +68,17 @@ export type ToolPartLike = {
 };
 
 export type MessagePartLike = TextPartLike | ReasoningPartLike | ToolPartLike;
+
+export type ToolVisualStatus =
+  | "pending"
+  | "running"
+  | "started"
+  | "updated"
+  | "completed"
+  | "error"
+  | "rejected"
+  | "queued"
+  | "in_progress";
 
 export type SessionMessageLike = {
   info: {
@@ -108,9 +119,9 @@ export type TimelineItemLike =
 
 export type BuildTimelineInput = {
   sessionId: string;
-  chatItems?: ChatItem[];
+  activeChatItems?: ChatItem[];
   pendingApprovals?: PendingApproval[];
-  toolActivities?: ToolActivity[];
+  activeToolActivities?: ToolActivity[];
 };
 
 export function mapSessionToConversation(session: SessionSummary): Conversation {
@@ -209,7 +220,7 @@ export function mapChatItemToSessionMessage(item: ChatItem, sessionId: string): 
 }
 
 export function buildTimelineItems(input: BuildTimelineInput): TimelineItemLike[] {
-  const messages = (input.chatItems ?? []).map((item): TimelineItemLike => {
+  const messages = (input.activeChatItems ?? []).map((item): TimelineItemLike => {
     const message = mapChatItemToSessionMessage(item, input.sessionId);
     return {
       id: `message:${item.id}`,
@@ -233,7 +244,7 @@ export function buildTimelineItems(input: BuildTimelineInput): TimelineItemLike[
       };
     });
 
-  const tools = (input.toolActivities ?? []).map((activity): TimelineItemLike => {
+  const tools = (input.activeToolActivities ?? []).map((activity): TimelineItemLike => {
     const tool = mapToolActivityToToolPart(activity);
     return {
       id: `tool:${activity.id}`,
@@ -250,14 +261,24 @@ export function buildTimelineItems(input: BuildTimelineInput): TimelineItemLike[
   });
 }
 
-function normalizeToolStatus(status: string): string {
+function normalizeToolStatus(status: string): ToolVisualStatus {
   switch (status) {
     case "pending_approval":
       return "pending";
     case "failed":
       return "error";
-    default:
+    case "pending":
+    case "running":
+    case "started":
+    case "updated":
+    case "completed":
+    case "error":
+    case "rejected":
+    case "queued":
+    case "in_progress":
       return status;
+    default:
+      return "updated";
   }
 }
 
