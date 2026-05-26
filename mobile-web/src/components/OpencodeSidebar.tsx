@@ -69,7 +69,9 @@ const styles: Record<string, CSSProperties> = {
     gridTemplateColumns: "1fr auto",
     gap: "8px",
     alignItems: "center",
-    border: "1px solid rgba(148, 163, 184, 0.16)",
+    borderStyle: "solid",
+    borderWidth: "1px",
+    borderColor: "rgba(148, 163, 184, 0.16)",
     borderRadius: "8px",
     padding: "8px",
     background: "#111827"
