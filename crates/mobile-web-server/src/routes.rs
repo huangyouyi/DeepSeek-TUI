@@ -458,7 +458,34 @@ async fn delete_session(
     State(state): State<RouterState>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
+    let removed_pending_approvals = state
+        .app
+        .pending_approvals()
+        .iter()
+        .filter(|approval| approval.session_id == session_id)
+        .count();
     if state.app.delete_session(&session_id) {
+        let now = now_ms();
+        state.app.push_audit(AuditEntry {
+            id: Uuid::new_v4().to_string(),
+            session_id: Some(session_id.clone()),
+            kind: "session.deleted".to_string(),
+            created_at_ms: now,
+            summary: "deleted session".to_string(),
+            metadata: json!({
+                "removed_pending_approvals": removed_pending_approvals,
+            }),
+        });
+        broadcast_event(
+            &state.app,
+            "session.deleted",
+            json!({
+                "id": session_id.clone(),
+                "session_id": session_id,
+                "removed_pending_approvals": removed_pending_approvals,
+                "deleted_at_ms": now,
+            }),
+        );
         StatusCode::NO_CONTENT.into_response()
     } else {
         (
@@ -489,8 +516,27 @@ async fn update_session_title(
             .into_response();
     }
 
-    match state.app.update_session_title(&session_id, title) {
-        Some(session) => (StatusCode::OK, Json(session)).into_response(),
+    let now = now_ms();
+    match state.app.update_session_title(&session_id, title, now) {
+        Some(session) => {
+            state.app.push_audit(AuditEntry {
+                id: Uuid::new_v4().to_string(),
+                session_id: Some(session.id.clone()),
+                kind: "session.updated".to_string(),
+                created_at_ms: now,
+                summary: "updated session title".to_string(),
+                metadata: json!({
+                    "title": session.title.clone(),
+                    "updated_at_ms": session.updated_at_ms,
+                }),
+            });
+            broadcast_event(
+                &state.app,
+                "session.updated",
+                serde_json::to_value(&session).expect("session summary must serialize"),
+            );
+            (StatusCode::OK, Json(session)).into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({

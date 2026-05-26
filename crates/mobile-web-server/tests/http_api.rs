@@ -214,6 +214,7 @@ async fn session_can_be_deleted_with_scoped_state_removed() {
     ));
     state.grant_session_allow("session-delete", "uptime", None);
 
+    let mut events = state.subscribe();
     let app = app_router(state.clone(), false);
     let response = app
         .clone()
@@ -228,6 +229,11 @@ async fn session_can_be_deleted_with_scoped_state_removed() {
         .expect("request must complete");
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let deleted_event = events.try_recv().expect("delete should broadcast event");
+    assert_eq!(deleted_event.event_type, "session.deleted");
+    assert_eq!(deleted_event.payload["id"], "session-delete");
+    assert_eq!(deleted_event.payload["session_id"], "session-delete");
+    assert_eq!(deleted_event.payload["removed_pending_approvals"], 1);
     assert_eq!(state.messages("session-delete"), Vec::new());
     assert!(!state.is_session_allowed("session-delete", "uptime", None));
     assert_eq!(state.messages("session-keep").len(), 1);
@@ -255,6 +261,11 @@ async fn session_can_be_deleted_with_scoped_state_removed() {
             "updated_at_ms": 200
         }])
     );
+    let audit = state.audit_recent();
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].kind, "session.deleted");
+    assert_eq!(audit[0].session_id.as_deref(), Some("session-delete"));
+    assert_eq!(audit[0].metadata["removed_pending_approvals"], 1);
 
     let response = app
         .oneshot(
@@ -271,23 +282,16 @@ async fn session_can_be_deleted_with_scoped_state_removed() {
 
 #[tokio::test]
 async fn session_title_can_be_trimmed_updated_and_rejects_empty_title() {
-    let app = app_router(test_state(), false);
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/sessions")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"title": "Initial"}).to_string()))
-                .expect("request must build"),
-        )
-        .await
-        .expect("request must complete");
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let created = json_response(response).await;
-    let session_id = created["id"].as_str().expect("id must be a string");
+    let state = test_state();
+    let session_id = "session-title";
+    state.upsert_session(SessionSummary {
+        id: session_id.to_string(),
+        title: "Initial".to_string(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    });
+    let mut events = state.subscribe();
+    let app = app_router(state.clone(), false);
 
     let response = app
         .clone()
@@ -303,15 +307,15 @@ async fn session_title_can_be_trimmed_updated_and_rejects_empty_title() {
         .expect("request must complete");
     assert_eq!(response.status(), StatusCode::OK);
     let updated = json_response(response).await;
-    assert_eq!(updated["id"], created["id"]);
+    assert_eq!(updated["id"], session_id);
     assert_eq!(updated["title"], "Router Lab");
-    assert_eq!(updated["created_at_ms"], created["created_at_ms"]);
-    assert!(
-        updated["updated_at_ms"].as_u64().expect("updated_at_ms")
-            >= created["updated_at_ms"]
-                .as_u64()
-                .expect("created updated_at_ms")
-    );
+    assert_eq!(updated["created_at_ms"], 1);
+    assert!(updated["updated_at_ms"].as_u64().expect("updated_at_ms") > 1);
+    let updated_event = events
+        .try_recv()
+        .expect("title update should broadcast event");
+    assert_eq!(updated_event.event_type, "session.updated");
+    assert_eq!(updated_event.payload, updated);
 
     let response = app
         .clone()
@@ -326,6 +330,12 @@ async fn session_title_can_be_trimmed_updated_and_rejects_empty_title() {
     assert_eq!(response.status(), StatusCode::OK);
     let sessions = json_response(response).await;
     assert_eq!(sessions[0]["title"], "Router Lab");
+    assert_eq!(sessions[0]["updated_at_ms"], updated["updated_at_ms"]);
+    let audit = state.audit_recent();
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].kind, "session.updated");
+    assert_eq!(audit[0].session_id.as_deref(), Some(session_id));
+    assert_eq!(audit[0].metadata["title"], "Router Lab");
 
     let response = app
         .clone()

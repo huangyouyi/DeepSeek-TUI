@@ -119,14 +119,19 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn update_session_title(&self, session_id: &str, title: String) -> Option<SessionSummary> {
+    pub fn update_session_title(
+        &self,
+        session_id: &str,
+        title: String,
+        updated_at_ms: u64,
+    ) -> Option<SessionSummary> {
         let mut state = self
             .inner
             .lock()
             .expect("app state mutex must not be poisoned");
         let session = state.sessions.get_mut(session_id)?;
         session.title = title;
-        session.updated_at_ms = crate::routes::now_ms();
+        session.updated_at_ms = updated_at_ms;
         Some(session.clone())
     }
 
