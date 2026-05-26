@@ -26,8 +26,7 @@ function formatCommand(permission: PermissionLike): string {
 
   return value
     .split(/\r\n|\r|\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => `$ ${line}`)
+    .map((line) => (line.trim().length > 0 ? `$ ${line}` : ""))
     .join("\n");
 }
 
@@ -59,7 +58,7 @@ export function InlinePermissionMessage({ permission, onRespond }: InlinePermiss
   }
 
   return (
-    <article className="PermissionDialogCard PermissionDialogCard--accent" aria-label="需要授权">
+    <article className="PermissionDialogCard PermissionDialogCard--accent" aria-busy={pending} aria-label="需要授权">
       <div className="PermissionDialogHeader">
         <span className="PermissionDialogTag">需要授权</span>
         <h3 className="PermissionDialogTitle">{permission.title}</h3>
@@ -79,7 +78,7 @@ export function InlinePermissionMessage({ permission, onRespond }: InlinePermiss
         ) : null}
       </div>
 
-      <div className="PermissionDialogActions">
+      <div className="PermissionDialogActions" aria-busy={pending}>
         <button
           className="PermissionDialogButton PermissionDialogButton--allow"
           type="button"
@@ -105,6 +104,7 @@ export function InlinePermissionMessage({ permission, onRespond }: InlinePermiss
           拒绝并停止
         </button>
       </div>
+      {pending ? <div role="status">正在处理授权响应...</div> : null}
     </article>
   );
 }

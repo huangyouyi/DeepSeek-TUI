@@ -41,7 +41,7 @@ describe("InlinePermissionMessage", () => {
     expect(screen.getByText("Bash 命令执行请求")).toBeTruthy();
     expect(screen.getByText(formattedCreatedAt)).toBeTruthy();
     expect(screen.getByText("Lists working directory contents")).toBeTruthy();
-    expect(container.querySelector("pre")?.textContent).toBe("$ pwd\n$ ls -la");
+    expect(container.querySelector("pre")?.textContent).toBe("$ pwd\n\n$ ls -la");
     expect(screen.getByRole("button", { name: "仅这次执行" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "本会话都允许" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "拒绝并停止" })).toBeTruthy();
@@ -95,6 +95,7 @@ describe("InlinePermissionMessage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "拒绝并停止" }));
 
+    expect(screen.getByRole("status").textContent).toBe("正在处理授权响应...");
     expect((screen.getByRole("button", { name: "仅这次执行" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "本会话都允许" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "拒绝并停止" }) as HTMLButtonElement).disabled).toBe(true);
@@ -103,5 +104,6 @@ describe("InlinePermissionMessage", () => {
     await waitFor(() => {
       expect((screen.getByRole("button", { name: "仅这次执行" }) as HTMLButtonElement).disabled).toBe(false);
     });
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
