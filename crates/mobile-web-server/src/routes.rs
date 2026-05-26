@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, StatusCode, Uri, header},
     middleware,
     response::IntoResponse,
-    routing::{get, get_service, post},
+    routing::{delete, get, get_service, post},
 };
 use deepseek_mobile_agent_core::{
     remote_schema::{RemoteToolCall, RemoteToolName},
@@ -85,6 +85,11 @@ struct RouterState {
 #[derive(Debug, Deserialize)]
 struct CreateSessionRequest {
     title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSessionTitleRequest {
+    title: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +223,10 @@ fn app_router_inner(
         .route("/api/ssh/target", get(get_ssh_target).put(put_ssh_target))
         .route("/api/ssh/check", post(check_ssh_target))
         .route("/api/sessions", get(list_sessions).post(create_session))
+        .route(
+            "/api/sessions/{id}",
+            delete(delete_session).patch(update_session_title),
+        )
         .route("/api/sessions/{id}/messages", get(list_messages))
         .route("/api/sessions/{id}/prompt", post(prompt_session))
         .route("/api/sessions/{id}/agent-turn", post(agent_turn))
@@ -443,6 +452,54 @@ async fn create_session(
     );
 
     (StatusCode::CREATED, Json(session))
+}
+
+async fn delete_session(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    if state.app.delete_session(&session_id) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": "session_not_found",
+                "message": format!("session not found: {session_id}")
+            })),
+        )
+            .into_response()
+    }
+}
+
+async fn update_session_title(
+    State(state): State<RouterState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<UpdateSessionTitleRequest>,
+) -> impl IntoResponse {
+    let title = request.title.trim().to_string();
+    if title.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": "empty_session_title",
+                "message": "session title must not be empty"
+            })),
+        )
+            .into_response();
+    }
+
+    match state.app.update_session_title(&session_id, title) {
+        Some(session) => (StatusCode::OK, Json(session)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": "session_not_found",
+                "message": format!("session not found: {session_id}")
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
