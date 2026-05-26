@@ -3,16 +3,14 @@
 }
 
 .markdown-body pre,
-.markdown-body code,
-pre,
-code {
+.markdown-body code {
   white-space: pre !important;
   word-break: normal !important;
   overflow-wrap: normal;
   max-width: 100%;
 }
 
-pre {
+.markdown-body pre {
   overflow-x: auto;
 }
 
