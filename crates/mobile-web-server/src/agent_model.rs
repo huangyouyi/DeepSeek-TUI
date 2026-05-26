@@ -147,6 +147,12 @@ impl AgentModel for MockAgentModel {
             .map(|message| message.content.to_ascii_lowercase())
             .collect::<Vec<_>>()
             .join("\n");
+        if message.contains("根据刚才远程命令结果") {
+            return Ok(AgentModelResponse {
+                assistant_text: mock_final_answer_from_context(&context),
+                tool_calls: Vec::new(),
+            });
+        }
         let command = if is_continue_message(&message) {
             diagnostic_command_from_context(context.as_str())
         } else {
@@ -396,6 +402,20 @@ fn agent_tool_call_from_openai(tool_call: OpenAiToolCall) -> Option<AgentToolCal
         tool: SHELL_TOOL_NAME.to_string(),
         command: arguments.command,
     })
+}
+
+fn mock_final_answer_from_context(context: &str) -> String {
+    if context.contains("df -h") && context.contains("100% /rom") {
+        "结论：未看到明显满盘迹象。/rom 是只读系统镜像，显示 100% 通常是 OpenWrt 正常现象；请重点关注 /overlay、/ 和外接挂载点。".to_string()
+    } else if context.contains("exit_code: 0") {
+        "结论：远程命令已执行成功，未看到命令级失败。请根据工具结果中的输出继续判断业务状态。"
+            .to_string()
+    } else if context.contains("exit_code:") {
+        "结论：远程命令已返回结果，但退出码非 0，结果可能不完整，需要根据缺失段落补充检查。"
+            .to_string()
+    } else {
+        "结论：远程命令结果已返回，但缺少明确退出码，需要结合工具输出继续确认。".to_string()
+    }
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
