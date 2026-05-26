@@ -47,6 +47,7 @@ import {
   selectExecutionStatus,
   selectFinalAnswer,
   selectToolActivities,
+  type ToolActivity as ToolActivityModel,
   withSseStatus
 } from "./state";
 import type { AgentTurnMode, AgentTurnResponse, ApprovalAction, DiagnosticKey, DiagnosticPreset, HealthResponse, Message, PendingApproval, ServerEvent, SshCheckResponse } from "./types";
@@ -95,6 +96,8 @@ export default function App() {
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [productSettingsOpen, setProductSettingsOpen] = useState(false);
   const [isProductSidebarOpen, setIsProductSidebarOpen] = useState(true);
+  const [productLocalChatItems, setProductLocalChatItems] = useState<Record<string, ChatItem[]>>({});
+  const [productLocalToolActivities, setProductLocalToolActivities] = useState<Record<string, ToolActivityModel[]>>({});
   const [latestAgentTurnId, setLatestAgentTurnId] = useState<string>("");
   const route = globalThis.location?.pathname ?? "/web";
   const isDebugRoute = route.startsWith("/debug");
@@ -461,12 +464,11 @@ export default function App() {
       }
 
       if (trimmed) {
-        dispatch({
-          type: "event",
-          event: {
-            type: "message.updated",
-            payload: { role: "user", text: trimmed, created_at_ms: Date.now() }
-          }
+        appendProductLocalChatItem(activeSessionId, {
+          id: `local:${activeSessionId}:user:${Date.now()}`,
+          role: "user",
+          text: trimmed,
+          createdAtMs: Date.now()
         });
       }
 
@@ -479,39 +481,30 @@ export default function App() {
       if (nextTurnId) {
         setLatestAgentTurnId(nextTurnId);
       }
-      response.executed_tools.forEach((tool, index) => {
-        dispatch({
-          type: "event",
-          event: {
-            type: tool.status === "failed" ? "tool.failed" : "tool.completed",
-            payload: {
-              id: `${response.turn_id}:tool:${index}`,
-              command: tool.command,
-              status: tool.status,
-              exit_code: tool.exit_code,
-              requires_approval: tool.requires_approval
-            }
-          }
-        });
-      });
+      appendProductLocalToolActivities(
+        activeSessionId,
+        response.executed_tools.map((tool, index) => ({
+          id: `${response.turn_id}:tool:${index}`,
+          command: tool.command,
+          status: tool.status,
+          exitCode: tool.exit_code,
+          requiresApproval: tool.requires_approval,
+          createdAtMs: Date.now() + index
+        }))
+      );
       if (response.assistant_text.trim()) {
-        dispatch({
-          type: "event",
-          event: {
-            type: "message.updated",
-            payload: {
-              role: "assistant",
-              status: response.status,
-              text: response.assistant_text,
-              created_at_ms: Date.now()
-            }
-          }
+        appendProductLocalChatItem(activeSessionId, {
+          id: `local:${activeSessionId}:assistant:${Date.now()}`,
+          role: "assistant",
+          status: response.status,
+          text: response.assistant_text,
+          createdAtMs: Date.now(),
+          isFinal: response.status !== "awaiting_approval"
         });
       }
       response.pending_approvals.forEach((approval) => {
         dispatch({ type: "event", event: { type: "approval.asked", payload: approval } });
       });
-      await productSessions.reloadMessages(activeSessionId).catch(() => undefined);
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -613,15 +606,39 @@ export default function App() {
     void productSessions.selectSession(selectedSessionId).catch((err) => setError(messageFromError(err)));
   }
 
+  function appendProductLocalChatItem(sessionId: string, item: ChatItem) {
+    setProductLocalChatItems((current) => ({
+      ...current,
+      [sessionId]: [...(current[sessionId] ?? []), item]
+    }));
+  }
+
+  function appendProductLocalToolActivities(sessionId: string, activities: ToolActivityModel[]) {
+    if (activities.length === 0) {
+      return;
+    }
+
+    setProductLocalToolActivities((current) => ({
+      ...current,
+      [sessionId]: [...(current[sessionId] ?? []), ...activities]
+    }));
+  }
+
   if (!isDebugRoute) {
     const activeProductSessionId = productSessions.activeSessionId;
     const historicalChatItems = activeProductSessionId ? messagesToChatItems(productSessions.activeMessages) : [];
+    const scopedLocalChatItems = activeProductSessionId
+      ? dedupeLocalChatItems(productLocalChatItems[activeProductSessionId] ?? [], historicalChatItems)
+      : [];
+    const scopedToolActivities = activeProductSessionId
+      ? [...(productLocalToolActivities[activeProductSessionId] ?? []), ...toolActivities]
+      : [];
     const productTimeline = activeProductSessionId
       ? buildProductTimeline({
           sessionId: activeProductSessionId,
-          activeChatItems: [...historicalChatItems, ...chatItems],
+          activeChatItems: [...historicalChatItems, ...scopedLocalChatItems],
           pendingApprovals: state.pendingApprovals,
-          activeToolActivities: toolActivities,
+          activeToolActivities: scopedToolActivities,
           isLoading: busy === "agent"
         })
       : [];
@@ -1093,6 +1110,14 @@ function messagesToChatItems(messages: Message[]): ChatItem[] {
       isFinal: message.role === "assistant" ? true : undefined
     }];
   });
+}
+
+function dedupeLocalChatItems(localItems: ChatItem[], historicalItems: ChatItem[]): ChatItem[] {
+  return localItems.filter((localItem) =>
+    !historicalItems.some(
+      (historicalItem) => historicalItem.role === localItem.role && historicalItem.text.trim() === localItem.text.trim()
+    )
+  );
 }
 
 function mapInlinePermissionResponse(response: "once" | "always" | "reject"): ApprovalAction {

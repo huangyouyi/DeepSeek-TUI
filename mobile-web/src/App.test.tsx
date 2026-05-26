@@ -245,6 +245,43 @@ describe("App opencode web integration", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session-2/messages", { headers: {} }));
   });
 
+  it("keeps optimistic product messages scoped to the active conversation", async () => {
+    createFetchHarness({
+      sessions: [
+        { id: "session-1", title: "Router", created_at_ms: 1, updated_at_ms: 1 },
+        { id: "session-2", title: "Network", created_at_ms: 2, updated_at_ms: 2 }
+      ],
+      messages: {
+        "session-1": [message("m1", "session-1", "assistant", "loaded session one")],
+        "session-2": [message("m2", "session-2", "assistant", "loaded session two")]
+      },
+      agentResponse: {
+        session_id: "session-1",
+        turn_id: "turn-1",
+        status: "completed",
+        assistant_text: "session one local answer",
+        executed_tools: [],
+        pending_approvals: []
+      }
+    });
+    window.history.replaceState({}, "", "/web?session=session-1");
+
+    render(<App />);
+
+    const composer = await screen.findByPlaceholderText("输入消息...");
+    fireEvent.change(composer, { target: { value: "session one local question" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText("session one local question")).toBeTruthy();
+    expect(await screen.findByText("session one local answer")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Network"));
+
+    await screen.findByText("loaded session two");
+    expect(screen.queryByText("session one local question")).toBeNull();
+    expect(screen.queryByText("session one local answer")).toBeNull();
+  });
+
   it("shows the welcome page for an active conversation with an empty timeline", async () => {
     createFetchHarness({
       sessions: [{ id: "session-1", title: "Empty", created_at_ms: 1, updated_at_ms: 1 }],
