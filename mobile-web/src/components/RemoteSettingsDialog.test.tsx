@@ -66,6 +66,27 @@ describe("RemoteSettingsDialog", () => {
     expect(baseProps.onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("moves focus into the modal, traps tab focus, and closes on Escape", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const onOpenChange = vi.fn();
+
+    render(<RemoteSettingsDialog {...baseProps} onOpenChange={onOpenChange} />);
+
+    const closeButton = screen.getByRole("button", { name: "Close remote settings" });
+    expect(document.activeElement).toBe(closeButton);
+
+    const saveButton = screen.getByRole("button", { name: "Save target" });
+    saveButton.focus();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Remote settings" }), { key: "Tab" });
+    expect(document.activeElement).toBe(closeButton);
+
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Remote settings" }), { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    opener.remove();
+  });
+
   it("parses port number before saving a valid target", async () => {
     const onSaveTarget = vi.fn().mockResolvedValue(undefined);
     render(<RemoteSettingsDialog {...baseProps} onSaveTarget={onSaveTarget} />);
@@ -89,8 +110,12 @@ describe("RemoteSettingsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save target" }));
 
     expect(onSaveTarget).not.toHaveBeenCalled();
-    expect(screen.getByText("Host is required.")).toBeTruthy();
-    expect(screen.getByText("Port must be an integer from 1 to 65535.")).toBeTruthy();
+    const hostError = screen.getByText("Host is required.");
+    const portError = screen.getByText("Port must be an integer from 1 to 65535.");
+    expect(hostError).toBeTruthy();
+    expect(portError).toBeTruthy();
+    expect(screen.getByLabelText("Host").getAttribute("aria-describedby")).toBe(hostError.id);
+    expect(screen.getByLabelText("Port").getAttribute("aria-describedby")).toBe(portError.id);
   });
 
   it("calls onCheckSsh from the check button", async () => {

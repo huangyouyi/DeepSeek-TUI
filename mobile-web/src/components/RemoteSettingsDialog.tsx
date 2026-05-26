@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { CSSProperties, FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, FormEvent, KeyboardEvent } from "react";
 import type { SshCheckResponse, SshTarget } from "../types";
 
 export type RemoteSettingsDialogProps = {
@@ -41,6 +41,8 @@ export function RemoteSettingsDialog({
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -52,6 +54,54 @@ export function RemoteSettingsDialog({
     setPort(String(target?.port ?? 22));
     setErrors({});
   }, [open, target]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(
+      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+    );
+    firstFocusable?.focus();
+
+    return () => {
+      previouslyFocusedRef.current?.focus();
+    };
+  }, [open]);
+
+  function handleDialogKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onOpenChange(false);
+      return;
+    }
+
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusable = Array.from(
+      dialogRef.current?.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])"
+      ) ?? []
+    );
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   if (!open) {
     return null;
@@ -104,7 +154,14 @@ export function RemoteSettingsDialog({
 
   return (
     <div style={styles.backdrop}>
-      <section role="dialog" aria-label="Remote settings" aria-modal="true" style={styles.dialog}>
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-label="Remote settings"
+        aria-modal="true"
+        onKeyDown={handleDialogKeyDown}
+        style={styles.dialog}
+      >
         <header style={styles.header}>
           <div>
             <p style={styles.eyebrow}>Remote SSH target</p>
@@ -129,42 +186,48 @@ export function RemoteSettingsDialog({
         </div>
 
         <form onSubmit={handleSubmit} style={styles.form}>
-          <label style={styles.field}>
-            <span style={styles.label}>Host</span>
+          <div style={styles.field}>
+            <label htmlFor="remote-host" style={styles.label}>Host</label>
             <input
+              id="remote-host"
               aria-invalid={Boolean(errors.host)}
+              aria-describedby={errors.host ? "remote-host-error" : undefined}
               value={host}
               onChange={(event) => setHost(event.currentTarget.value)}
               disabled={disabled}
               style={styles.input}
             />
-            {errors.host ? <span style={styles.error}>{errors.host}</span> : null}
-          </label>
+            {errors.host ? <span id="remote-host-error" role="alert" style={styles.error}>{errors.host}</span> : null}
+          </div>
 
-          <label style={styles.field}>
-            <span style={styles.label}>User</span>
+          <div style={styles.field}>
+            <label htmlFor="remote-user" style={styles.label}>User</label>
             <input
+              id="remote-user"
               aria-invalid={Boolean(errors.user)}
+              aria-describedby={errors.user ? "remote-user-error" : undefined}
               value={user}
               onChange={(event) => setUser(event.currentTarget.value)}
               disabled={disabled}
               style={styles.input}
             />
-            {errors.user ? <span style={styles.error}>{errors.user}</span> : null}
-          </label>
+            {errors.user ? <span id="remote-user-error" role="alert" style={styles.error}>{errors.user}</span> : null}
+          </div>
 
-          <label style={styles.field}>
-            <span style={styles.label}>Port</span>
+          <div style={styles.field}>
+            <label htmlFor="remote-port" style={styles.label}>Port</label>
             <input
+              id="remote-port"
               aria-invalid={Boolean(errors.port)}
+              aria-describedby={errors.port ? "remote-port-error" : undefined}
               inputMode="numeric"
               value={port}
               onChange={(event) => setPort(event.currentTarget.value)}
               disabled={disabled}
               style={styles.input}
             />
-            {errors.port ? <span style={styles.error}>{errors.port}</span> : null}
-          </label>
+            {errors.port ? <span id="remote-port-error" role="alert" style={styles.error}>{errors.port}</span> : null}
+          </div>
 
           <div style={styles.actions}>
             <button type="button" onClick={handleCheckSsh} disabled={disabled} style={styles.secondaryButton}>

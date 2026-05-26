@@ -121,7 +121,7 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
       const session = event.payload as SessionSummary;
       return {
         ...state,
-        activeSessionId: session.id,
+        activeSessionId: state.activeSessionId ?? session.id,
         sessions: upsertById(state.sessions, session),
         timeline: prependTimeline(state.timeline, {
           kind: "session",
@@ -248,7 +248,9 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
     }
     case "tool.started":
     case "tool.completed":
-    case "tool.failed": {
+    case "tool.failed":
+    case "agent.tool.completed":
+    case "agent.tool.failed": {
       const payload = objectPayload(event.payload);
       const activity = toolActivityFromLegacyEvent(state.toolActivities, event.type, payload);
       return {
@@ -630,8 +632,10 @@ function legacyToolStatus(eventType: ServerEvent["type"]): string {
     case "tool.started":
       return "running";
     case "tool.completed":
+    case "agent.tool.completed":
       return "completed";
     case "tool.failed":
+    case "agent.tool.failed":
       return "failed";
     default:
       return "updated";

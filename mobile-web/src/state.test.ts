@@ -266,6 +266,24 @@ describe("reduceEvent", () => {
     expect(next.activeSessionId).toBeUndefined();
   });
 
+  it("does not switch the active session for background session updates", () => {
+    const state = {
+      ...initialAppState,
+      activeSessionId: "session-1",
+      sessions: [
+        { id: "session-1", title: "Active", created_at_ms: 100, updated_at_ms: 100 }
+      ]
+    };
+
+    const next = reduceEvent(state, {
+      type: "session.updated",
+      payload: { id: "session-2", title: "Background", created_at_ms: 200, updated_at_ms: 200 }
+    });
+
+    expect(next.activeSessionId).toBe("session-1");
+    expect(next.sessions.map((session) => session.id)).toContain("session-2");
+  });
+
   it("clears active chat and tool UI state when the deleted session is active", () => {
     const state = {
       ...initialAppState,
@@ -514,6 +532,35 @@ describe("product view selectors", () => {
     ]);
     expect(selectFinalAnswer(state)?.text).toBe("The command finished.");
     expect(buildFinalAnswerReport(state)).toBe("The command finished.");
+  });
+
+  it("matches legacy tool starts with agent tool completion events", () => {
+    const started = reduceEvent(initialAppState, {
+      type: "tool.started",
+      payload: {
+        command: "uname -a"
+      }
+    });
+    const completed = reduceEvent(started, {
+      type: "agent.tool.completed",
+      payload: {
+        command: "uname -a",
+        output: "Linux test-host",
+        exit_code: 0
+      }
+    });
+
+    expect(selectToolActivities(completed)).toHaveLength(1);
+    expect(selectToolActivities(completed)[0]).toMatchObject({
+      id: "command:uname -a",
+      status: "completed",
+      output: "Linux test-host",
+      exitCode: 0
+    });
+    expect(selectExecutionStatus(completed, null)).toEqual({
+      state: "idle",
+      label: "空闲"
+    });
   });
 
   it("does not turn tool-only message parts into chat or final answer text", () => {

@@ -60,16 +60,9 @@ describe("productStatus", () => {
   });
 
   it("formats session timestamps with the product shell date format", () => {
-    const value = Date.UTC(2026, 4, 26, 14, 30);
+    const value = new Date(2026, 4, 26, 14, 30).getTime();
 
-    expect(formatSessionTime(value)).toBe(
-      new Intl.DateTimeFormat(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-      }).format(new Date(value))
-    );
+    expect(formatSessionTime(value)).toBe("May 26, 02:30 PM");
   });
 
   it("builds target labels", () => {

@@ -170,6 +170,30 @@ describe("useProductSessions", () => {
     expect(window.location.search).toBe("?session=first");
   });
 
+  it("loads URL session changes from browser navigation", async () => {
+    const first = session("first", "First", 10);
+    const second = session("second", "Second", 20);
+    const { api } = createApiHarness({
+      sessions: [first, second],
+      messages: {
+        first: [message("message-1", "first", "first message")],
+        second: [message("message-2", "second", "second message")]
+      }
+    });
+    window.history.replaceState({}, "", "/web?session=first");
+
+    const { result } = renderHook(() => useProductSessions({ api }));
+    await waitFor(() => expect(result.current.activeSessionId).toBe("first"));
+
+    window.history.pushState({}, "", "/web?session=second");
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    await waitFor(() => expect(result.current.activeSessionId).toBe("second"));
+    expect(result.current.activeMessages[0].parts[0].text).toBe("second message");
+  });
+
   it("selects a newly created conversation", async () => {
     const existing = session("existing", "Existing", 10);
     const created = session("created", "Created", 20);
@@ -218,6 +242,60 @@ describe("useProductSessions", () => {
     expect(result.current.sessions.map((candidate) => candidate.id)).toEqual(["next"]);
     expect(result.current.activeMessages[0].parts[0].text).toBe("next message");
     expect(window.location.search).toBe("?session=next");
+  });
+
+  it("does not restore a stale active session when delete finishes after another selection", async () => {
+    const first = session("first", "First", 30);
+    const second = session("second", "Second", 20);
+    const third = session("third", "Third", 10);
+    let sessions = [first, second, third];
+    let resolveDelete: () => void = () => undefined;
+    const deleteStarted = new Promise<void>((resolve) => {
+      resolveDelete = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url === "/api/sessions" && method === "GET") {
+        return jsonResponse(sessions);
+      }
+
+      const messagesMatch = url.match(/^\/api\/sessions\/([^/]+)\/messages$/);
+      if (messagesMatch && method === "GET") {
+        const sessionId = decodeURIComponent(messagesMatch[1]);
+        return jsonResponse([message(`message-${sessionId}`, sessionId, `${sessionId} message`)]);
+      }
+
+      if (url === "/api/sessions/second" && method === "DELETE") {
+        await deleteStarted;
+        sessions = sessions.filter((candidate) => candidate.id !== "second");
+        return new Response(null, { status: 204 });
+      }
+
+      return jsonResponse({ message: `Unhandled ${method} ${url}` }, { status: 500, statusText: "Unhandled" });
+    });
+
+    window.history.replaceState({}, "", "/web?session=first");
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+    const { result } = renderHook(() => useProductSessions({ api }));
+    await waitFor(() => expect(result.current.activeSessionId).toBe("first"));
+
+    let deletePromise: Promise<void> = Promise.resolve();
+    act(() => {
+      deletePromise = result.current.deleteConversation("second");
+    });
+    await act(async () => {
+      await result.current.selectSession("third");
+    });
+    resolveDelete();
+    await act(async () => {
+      await deletePromise;
+    });
+
+    expect(result.current.activeSessionId).toBe("third");
+    expect(result.current.activeMessages[0].parts[0].text).toBe("third message");
+    expect(window.location.search).toBe("?session=third");
   });
 
   it("updates a conversation title in the local session list", async () => {

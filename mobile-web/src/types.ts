@@ -182,6 +182,8 @@ export type ServerEventType =
   | "tool.stderr"
   | "tool.completed"
   | "tool.failed"
+  | "agent.tool.completed"
+  | "agent.tool.failed"
   | "approval.asked"
   | "approval.replied"
   | "audit.updated"

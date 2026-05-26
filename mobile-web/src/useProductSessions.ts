@@ -60,6 +60,7 @@ function replaceUrlSessionId(sessionId: string | null): void {
 export function useProductSessions(options: UseProductSessionsOptions = {}): UseProductSessionsResult {
   const api = options.api;
   const requestIdRef = useRef(0);
+  const activeSessionIdRef = useRef<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeMessages, setActiveMessages] = useState<Message[]>([]);
@@ -67,6 +68,7 @@ export function useProductSessions(options: UseProductSessionsOptions = {}): Use
   const [error, setError] = useState<string | null>(null);
 
   const clearActiveSession = useCallback(() => {
+    activeSessionIdRef.current = null;
     setActiveSessionId(null);
     setActiveMessages([]);
     replaceUrlSessionId(null);
@@ -80,6 +82,7 @@ export function useProductSessions(options: UseProductSessionsOptions = {}): Use
       if (requestIdRef.current !== requestId) {
         return;
       }
+      activeSessionIdRef.current = id;
       setActiveSessionId(id);
       setActiveMessages(messages);
       replaceUrlSessionId(id);
@@ -185,9 +188,10 @@ export function useProductSessions(options: UseProductSessionsOptions = {}): Use
           return;
         }
 
-        const activeSessionStillExists = loadedSessions.some((session) => session.id === activeSessionId);
-        const shouldSelectNext = activeSessionId === id || !activeSessionStillExists;
-        const nextSessionId = shouldSelectNext ? mostRecentSession(loadedSessions)?.id : activeSessionId;
+        const currentActiveSessionId = activeSessionIdRef.current;
+        const activeSessionStillExists = loadedSessions.some((session) => session.id === currentActiveSessionId);
+        const shouldSelectNext = currentActiveSessionId === id || !activeSessionStillExists;
+        const nextSessionId = shouldSelectNext ? mostRecentSession(loadedSessions)?.id : currentActiveSessionId;
         if (nextSessionId) {
           await loadMessagesForSession(nextSessionId);
         } else {
@@ -200,7 +204,7 @@ export function useProductSessions(options: UseProductSessionsOptions = {}): Use
         setLoading(false);
       }
     },
-    [activeSessionId, api, clearActiveSession, loadMessagesForSession]
+    [api, clearActiveSession, loadMessagesForSession]
   );
 
   const updateConversationTitle = useCallback(
@@ -234,8 +238,17 @@ export function useProductSessions(options: UseProductSessionsOptions = {}): Use
 
     initializeSessions();
 
+    function handlePopState(): void {
+      void loadSessions(readUrlSessionId()).catch(() => {
+        // The hook exposes the error state for rendering.
+      });
+    }
+
+    window.addEventListener("popstate", handlePopState);
+
     return () => {
       requestIdRef.current += 1;
+      window.removeEventListener("popstate", handlePopState);
     };
   }, [loadSessions]);
 
