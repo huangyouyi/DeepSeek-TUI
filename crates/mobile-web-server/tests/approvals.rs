@@ -31,6 +31,21 @@ impl FakeRunner {
     }
 }
 
+#[derive(Clone, Debug)]
+struct FailingRunner;
+
+impl CommandRunner for FailingRunner {
+    fn run(
+        &self,
+        _target: &SshTarget,
+        _command: &SshCommandRequest,
+    ) -> Result<SshCommandOutput, CommandRunError> {
+        Err(CommandRunError::Spawn(std::io::Error::other(
+            "token: SHOULD_NOT_LEAK",
+        )))
+    }
+}
+
 impl CommandRunner for FakeRunner {
     fn run(
         &self,
@@ -185,4 +200,226 @@ async fn advanced_command_approve_once_executes_and_replay_is_rejected() {
         .expect("request must complete");
     assert_eq!(replay.status(), StatusCode::CONFLICT);
     assert_eq!(runner.calls(), vec!["pwd"]);
+}
+
+#[tokio::test]
+async fn advanced_command_unsupported_response_does_not_consume_pending_approval() {
+    let runner = FakeRunner::new();
+    let app = app_router_with_runner(test_state(), false, runner.clone());
+
+    let prepared = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/commands/prepare")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"session_id": "session-1", "command": "pwd"}).to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    let approval = json_response(prepared).await;
+    let approval_id = approval["id"].as_str().expect("approval id");
+
+    let unsupported = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/approvals/{approval_id}/respond"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"response": "typo"}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
+    assert!(runner.calls().is_empty());
+
+    let approved = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/approvals/{approval_id}/respond"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"response": "approve_once"}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    assert_eq!(approved.status(), StatusCode::OK);
+    assert_eq!(runner.calls(), vec!["pwd"]);
+}
+
+#[tokio::test]
+async fn advanced_command_approve_session_executes_and_records_session_scope_audit() {
+    let runner = FakeRunner::new();
+    let app = app_router_with_runner(test_state(), false, runner.clone());
+
+    let prepared = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/commands/prepare")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": "session-1",
+                        "command": "opkg update",
+                        "cwd": "/tmp"
+                    })
+                    .to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    let approval = json_response(prepared).await;
+    assert_eq!(approval["risk_level"], "high");
+    assert_eq!(approval["target"], "remote.shell.exec");
+    let approval_id = approval["id"].as_str().expect("approval id");
+
+    let approved = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/approvals/{approval_id}/respond"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"response": "approve_session"}).to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(approved.status(), StatusCode::OK);
+    let approved_body = json_response(approved).await;
+    assert_eq!(approved_body["status"], "approved");
+    assert_eq!(approved_body["result"]["scope"], "session");
+    assert_eq!(runner.calls(), vec!["opkg update"]);
+
+    let audit_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/audit/recent")
+                .body(Body::empty())
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    let audit = json_response(audit_response).await;
+    let last = audit
+        .as_array()
+        .expect("audit array")
+        .last()
+        .expect("audit");
+    assert_eq!(last["kind"], "approval.approved");
+    assert_eq!(last["metadata"]["action"], "approved");
+    assert_eq!(last["metadata"]["response"], "approve_session");
+    assert_eq!(last["metadata"]["scope"], "session");
+    assert_eq!(last["metadata"]["risk"]["level"], "high");
+    assert_eq!(last["metadata"]["target"], "remote.shell.exec");
+    assert_eq!(last["metadata"]["command"], "opkg update");
+    assert_eq!(last["metadata"]["cwd"], "/tmp");
+}
+
+#[tokio::test]
+async fn advanced_command_always_alias_behaves_like_approve_session_with_stable_status() {
+    let runner = FakeRunner::new();
+    let app = app_router_with_runner(test_state(), false, runner.clone());
+
+    let prepared = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/commands/prepare")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"session_id": "session-1", "command": "opkg update"}).to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    let approval = json_response(prepared).await;
+    let approval_id = approval["id"].as_str().expect("approval id");
+
+    let approved = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/approvals/{approval_id}/respond"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"response": "always"}).to_string()))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(approved.status(), StatusCode::OK);
+    let approved_body = json_response(approved).await;
+    assert_eq!(approved_body["status"], "approved");
+    assert_eq!(approved_body["approval"]["status"], "approved");
+    assert_eq!(approved_body["result"]["scope"], "session");
+    assert_eq!(runner.calls(), vec!["opkg update"]);
+}
+
+#[tokio::test]
+async fn advanced_command_approve_session_grants_and_audits_even_when_execution_fails() {
+    let state = test_state();
+    let app = app_router_with_runner(state.clone(), false, FailingRunner);
+
+    let prepared = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/commands/prepare")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": "session-1",
+                        "command": "opkg update",
+                        "cwd": "/tmp"
+                    })
+                    .to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+    let approval = json_response(prepared).await;
+    let approval_id = approval["id"].as_str().expect("approval id");
+
+    let approved = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/approvals/{approval_id}/respond"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"response": "approve_session"}).to_string(),
+                ))
+                .expect("request must build"),
+        )
+        .await
+        .expect("request must complete");
+
+    assert_eq!(approved.status(), StatusCode::BAD_GATEWAY);
+    assert!(state.is_session_allowed("session-1", "opkg update", Some("/tmp")));
+    let audit = state.audit_recent();
+    let last = audit.last().expect("audit entry");
+    assert_eq!(last.kind, "approval.approved");
+    assert_eq!(last.metadata["response"], "approve_session");
+    assert_eq!(last.metadata["scope"], "session");
+    assert_eq!(last.metadata["result"]["status"], "failed");
+    assert!(!last.metadata.to_string().contains("SHOULD_NOT_LEAK"));
 }

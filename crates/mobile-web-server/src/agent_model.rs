@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::model_config::MobileModelConfig;
+use crate::{diagnostics::preset_command, model_config::MobileModelConfig};
 
 const SHELL_TOOL_NAME: &str = "remote.shell.exec";
 const SHELL_TOOL_WIRE_NAME: &str = "remote_shell_exec";
@@ -19,6 +19,13 @@ pub trait AgentModel: Send + Sync {
 pub struct AgentModelRequest {
     pub session_id: String,
     pub message: String,
+    pub context: Vec<AgentContextMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentContextMessage {
+    pub role: String,
+    pub content: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,29 +141,16 @@ impl MockAgentModel {
 impl AgentModel for MockAgentModel {
     fn complete(&self, request: &AgentModelRequest) -> Result<AgentModelResponse, AgentModelError> {
         let message = request.message.to_ascii_lowercase();
-        let command = if contains_any(
-            &message,
-            &["update", "install", "opkg", "apt", "更新", "安装"],
-        ) {
-            Some("opkg update")
-        } else if contains_any(&message, &["user", "identity", "who am i", "用户", "身份"]) {
-            Some("id")
-        } else if contains_any(&message, &["disk", "space", "filesystem", "磁盘", "空间"]) {
-            Some("df -h")
-        } else if contains_any(
-            &message,
-            &[
-                "system",
-                "operating system",
-                "kernel",
-                "linux",
-                "版本",
-                "系统",
-            ],
-        ) {
-            Some("uname -a")
+        let context = request
+            .context
+            .iter()
+            .map(|message| message.content.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let command = if is_continue_message(&message) {
+            diagnostic_command_from_context(context.as_str())
         } else {
-            None
+            command_from_direct_message(message.as_str())
         };
 
         Ok(match command {
@@ -218,6 +212,20 @@ impl DeepSeekAgentModel {
         if let Some(api_key) = self.config.api_key.as_deref().and_then(non_empty) {
             headers.push(("authorization".to_string(), format!("Bearer {api_key}")));
         }
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": "You are a remote Linux agent. Use the remote_shell_exec tool for shell commands and otherwise answer concisely."
+        })];
+        messages.extend(
+            request
+                .context
+                .iter()
+                .filter_map(agent_context_message_to_openai),
+        );
+        messages.push(json!({
+            "role": "user",
+            "content": request.message
+        }));
 
         AgentHttpRequest {
             method: "POST".to_string(),
@@ -228,16 +236,7 @@ impl DeepSeekAgentModel {
             headers,
             body: json!({
                 "model": self.config.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a remote Linux agent. Use the remote_shell_exec tool for shell commands and otherwise answer concisely."
-                    },
-                    {
-                        "role": "user",
-                        "content": request.message
-                    }
-                ],
+                "messages": messages,
                 "tools": [
                     {
                         "type": "function",
@@ -401,6 +400,126 @@ fn agent_tool_call_from_openai(tool_call: OpenAiToolCall) -> Option<AgentToolCal
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn command_from_direct_message(message: &str) -> Option<&'static str> {
+    if contains_any(
+        message,
+        &["update", "install", "opkg", "apt", "更新", "安装"],
+    ) {
+        Some("opkg update")
+    } else if contains_any(message, &["dns", "resolver", "resolve", "解析", "域名"]) {
+        preset_command("dns")
+    } else if contains_any(message, &["docker", "container", "containers", "容器"]) {
+        preset_command("docker")
+    } else if contains_any(message, &["openwrt", "router", "routing", "路由器", "路由"]) {
+        preset_command("openwrt_network")
+    } else if contains_any(
+        message,
+        &["log", "logs", "journal", "dmesg", "日志", "摘要"],
+    ) {
+        preset_command("logs")
+    } else if contains_any(
+        message,
+        &[
+            "system",
+            "operating system",
+            "kernel",
+            "linux",
+            "版本",
+            "系统",
+        ],
+    ) {
+        preset_command("system_info")
+    } else if contains_any(
+        message,
+        &["service", "services", "daemon", "running", "服务", "运行"],
+    ) {
+        preset_command("services")
+    } else if contains_any(
+        message,
+        &[
+            "cpu",
+            "memory",
+            "mem",
+            "load",
+            "内存",
+            "处理器",
+            "负载",
+            "使用率",
+        ],
+    ) {
+        preset_command("cpu_memory")
+    } else if contains_any(
+        message,
+        &[
+            "network",
+            "connectivity",
+            "interface",
+            "ip address",
+            "网络",
+            "联网",
+        ],
+    ) {
+        preset_command("network")
+    } else if contains_any(message, &["user", "identity", "who am i", "用户", "身份"]) {
+        preset_command("current_user")
+    } else if contains_any(message, &["disk", "space", "filesystem", "磁盘", "空间"]) {
+        preset_command("disk_usage")
+    } else {
+        None
+    }
+}
+
+fn diagnostic_command_from_context(context: &str) -> Option<&'static str> {
+    if contains_any(
+        context,
+        &[
+            "network",
+            "connectivity",
+            "interface",
+            "ip address",
+            "网络",
+            "联网",
+        ],
+    ) {
+        preset_command("network")
+    } else if contains_any(context, &["disk", "space", "filesystem", "磁盘", "空间"]) {
+        preset_command("disk_usage")
+    } else if contains_any(
+        context,
+        &[
+            "system",
+            "operating system",
+            "kernel",
+            "linux",
+            "版本",
+            "系统",
+        ],
+    ) {
+        preset_command("system_info")
+    } else {
+        None
+    }
+}
+
+fn is_continue_message(message: &str) -> bool {
+    contains_any(message, &["继续", "刚才", "continue"])
+}
+
+fn agent_context_message_to_openai(message: &AgentContextMessage) -> Option<Value> {
+    let role = match message.role.as_str() {
+        "system" | "user" | "assistant" => message.role.as_str(),
+        _ => return None,
+    };
+    let content = message.content.trim();
+    if content.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "role": role,
+        "content": content
+    }))
 }
 
 fn api_key_present(config: &MobileModelConfig) -> bool {

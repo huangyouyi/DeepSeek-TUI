@@ -19,6 +19,25 @@ export type MessagePart = {
   data?: unknown;
 };
 
+export type ToolPartData = {
+  turn_id?: string;
+  agent_turn_id?: string;
+  tool_call_id?: string;
+  approval_id?: string;
+  tool?: string;
+  title?: string;
+  status?: string;
+  requires_approval?: boolean;
+  command?: string;
+  input?: unknown;
+  output?: unknown;
+  stdout?: string;
+  stderr?: string;
+  exit_code?: number | null;
+  duration_ms?: number;
+  timed_out?: boolean;
+};
+
 export type Message = {
   id: string;
   session_id: string;
@@ -93,11 +112,19 @@ export type PendingApproval = {
   created_at_ms: number;
   status: string;
   agent_turn_id?: string;
+  risk_level?: string;
+  risk_reason?: string;
+  target?: string;
+  target_label?: string;
 };
 
 export type AgentTurnRequest = {
   message: string;
+  mode?: "normal" | "retry" | "continue";
+  retry_turn_id?: string;
 };
+
+export type AgentTurnMode = NonNullable<AgentTurnRequest["mode"]>;
 
 export type AgentExecutedTool = {
   tool: string;
@@ -114,10 +141,13 @@ export type AgentTurnResponse = {
   assistant_text: string;
   executed_tools: AgentExecutedTool[];
   pending_approvals: PendingApproval[];
+  messages?: Message[];
 };
 
+export type ApprovalAction = "approve_once" | "approve_session" | "reject_stop";
+
 export type ApprovalRespondRequest = {
-  response: "approve_once" | "reject";
+  response: ApprovalAction;
 };
 
 export type ApprovalResponse = {
@@ -147,7 +177,8 @@ export type ServerEventType =
   | "approval.asked"
   | "approval.replied"
   | "audit.updated"
-  | "connection.updated";
+  | "connection.updated"
+  | "assistant.started";
 
 export type ServerEvent = {
   type: ServerEventType;

@@ -11,6 +11,8 @@ pub struct HealthResponse {
     pub service: String,
     pub protocol: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,54 @@ pub struct MessagePart {
     pub text: Option<String>,
     #[serde(default)]
     pub data: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolPartData {
+    pub turn_id: String,
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub title: String,
+    pub status: String,
+    pub requires_approval: bool,
+    pub command: String,
+    #[serde(default)]
+    pub input: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timed_out: Option<bool>,
+}
+
+#[must_use]
+pub fn text_part(text: impl Into<String>, data: Value) -> MessagePart {
+    MessagePart {
+        id: format!("part-{}", uuid::Uuid::new_v4()),
+        kind: "text".to_string(),
+        text: Some(text.into()),
+        data,
+    }
+}
+
+#[must_use]
+pub fn tool_part(data: ToolPartData) -> MessagePart {
+    MessagePart {
+        id: format!("part-{}", uuid::Uuid::new_v4()),
+        kind: "tool".to_string(),
+        text: None,
+        data: serde_json::to_value(data).expect("tool part data must serialize"),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,19 +156,89 @@ pub struct PendingApproval {
 
 impl PendingApproval {
     #[must_use]
+    pub fn remote_shell(
+        id: String,
+        session_id: String,
+        command: String,
+        cwd: Option<String>,
+        created_at_ms: u64,
+        status: String,
+    ) -> Self {
+        Self {
+            id,
+            session_id,
+            command,
+            cwd,
+            created_at_ms,
+            status,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn risk_level(&self) -> &'static str {
+        "high"
+    }
+
+    #[must_use]
+    pub(crate) const fn risk_reason(&self) -> &'static str {
+        "advanced command requires explicit approval"
+    }
+
+    #[must_use]
+    pub(crate) const fn target(&self) -> &'static str {
+        "remote.shell.exec"
+    }
+
+    #[must_use]
+    pub(crate) const fn target_label(&self) -> &'static str {
+        "Remote shell command"
+    }
+
+    #[must_use]
     pub(crate) fn agent_turn_id(&self) -> Option<String> {
         agent_approval_origins()
             .lock()
             .expect("agent approval origin mutex must not be poisoned")
             .get(&self.id)
-            .cloned()
+            .and_then(|origin| origin.agent_turn_id.clone())
     }
 
     pub(crate) fn set_agent_turn_id(&self, agent_turn_id: impl Into<String>) {
+        let mut origins = agent_approval_origins()
+            .lock()
+            .expect("agent approval origin mutex must not be poisoned");
+        origins.entry(self.id.clone()).or_default().agent_turn_id = Some(agent_turn_id.into());
+    }
+
+    #[must_use]
+    pub(crate) fn agent_message_id(&self) -> Option<String> {
         agent_approval_origins()
             .lock()
             .expect("agent approval origin mutex must not be poisoned")
-            .insert(self.id.clone(), agent_turn_id.into());
+            .get(&self.id)
+            .and_then(|origin| origin.message_id.clone())
+    }
+
+    #[must_use]
+    pub(crate) fn agent_tool_part_id(&self) -> Option<String> {
+        agent_approval_origins()
+            .lock()
+            .expect("agent approval origin mutex must not be poisoned")
+            .get(&self.id)
+            .and_then(|origin| origin.tool_part_id.clone())
+    }
+
+    pub(crate) fn set_agent_tool_part(
+        &self,
+        message_id: impl Into<String>,
+        tool_part_id: impl Into<String>,
+    ) {
+        let mut origins = agent_approval_origins()
+            .lock()
+            .expect("agent approval origin mutex must not be poisoned");
+        let origin = origins.entry(self.id.clone()).or_default();
+        origin.message_id = Some(message_id.into());
+        origin.tool_part_id = Some(tool_part_id.into());
     }
 }
 
@@ -128,8 +248,10 @@ impl Serialize for PendingApproval {
         S: serde::Serializer,
     {
         let agent_turn_id = self.agent_turn_id();
-        let mut state = serializer
-            .serialize_struct("PendingApproval", 6 + usize::from(agent_turn_id.is_some()))?;
+        let mut state = serializer.serialize_struct(
+            "PendingApproval",
+            10 + usize::from(self.cwd.is_some()) + usize::from(agent_turn_id.is_some()),
+        )?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("session_id", &self.session_id)?;
         state.serialize_field("command", &self.command)?;
@@ -138,6 +260,10 @@ impl Serialize for PendingApproval {
         }
         state.serialize_field("created_at_ms", &self.created_at_ms)?;
         state.serialize_field("status", &self.status)?;
+        state.serialize_field("risk_level", self.risk_level())?;
+        state.serialize_field("risk_reason", self.risk_reason())?;
+        state.serialize_field("target", self.target())?;
+        state.serialize_field("target_label", self.target_label())?;
         if let Some(agent_turn_id) = agent_turn_id {
             state.serialize_field("agent_turn_id", &agent_turn_id)?;
         }
@@ -168,7 +294,9 @@ impl<'de> Deserialize<'de> for PendingApproval {
             agent_approval_origins()
                 .lock()
                 .expect("agent approval origin mutex must not be poisoned")
-                .insert(fields.id.clone(), agent_turn_id);
+                .entry(fields.id.clone())
+                .or_default()
+                .agent_turn_id = Some(agent_turn_id);
         }
         Ok(Self {
             id: fields.id,
@@ -181,14 +309,26 @@ impl<'de> Deserialize<'de> for PendingApproval {
     }
 }
 
-fn agent_approval_origins() -> &'static Mutex<HashMap<String, String>> {
-    static ORIGINS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+fn agent_approval_origins() -> &'static Mutex<HashMap<String, ApprovalOrigin>> {
+    static ORIGINS: OnceLock<Mutex<HashMap<String, ApprovalOrigin>>> = OnceLock::new();
     ORIGINS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ApprovalOrigin {
+    agent_turn_id: Option<String>,
+    message_id: Option<String>,
+    tool_part_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTurnRequest {
+    #[serde(default)]
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_turn_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

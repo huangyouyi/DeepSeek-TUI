@@ -35,6 +35,7 @@ dist/
 
 # Logs
 *.log
+!docs/mobile-evidence-bundles/templates/*/commands.log
 
 # Generated
 outputs/

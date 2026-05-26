@@ -154,6 +154,20 @@ pub fn preset_command(diagnostic: &str) -> Option<&'static str> {
         "memory" => Some("free -m || cat /proc/meminfo"),
         "network" => Some("ip addr || ifconfig"),
         "working_directory" => Some("pwd"),
+        "dns" => Some("getent hosts deepseek.com || nslookup deepseek.com || cat /etc/resolv.conf"),
+        "cpu_memory" => Some(
+            "uptime; free -m || cat /proc/meminfo; ps -eo pid,ppid,comm,%cpu,%mem --sort=-%cpu | head -20",
+        ),
+        "services" => Some(
+            "systemctl list-units --type=service --state=running --no-pager || ps -eo pid,comm,args | head -50",
+        ),
+        "docker" => Some(
+            "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || docker info",
+        ),
+        "openwrt_network" => {
+            Some("ubus call system board; ip route; ip addr; cat /etc/resolv.conf")
+        }
+        "logs" => Some("journalctl -n 80 --no-pager || logread -l 80 || dmesg | tail -80"),
         _ => None,
     }
 }
@@ -167,6 +181,12 @@ pub fn preset_diagnostics() -> Vec<DiagnosticPreset> {
         ("memory", "Memory"),
         ("network", "Network"),
         ("working_directory", "Working directory"),
+        ("dns", "DNS"),
+        ("cpu_memory", "CPU and memory"),
+        ("services", "Service status"),
+        ("docker", "Docker status"),
+        ("openwrt_network", "OpenWrt/router network"),
+        ("logs", "Log summary"),
     ]
     .into_iter()
     .map(|(key, label)| DiagnosticPreset {

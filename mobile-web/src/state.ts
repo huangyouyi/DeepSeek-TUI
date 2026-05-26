@@ -1,12 +1,15 @@
 import type {
   AuditEntry,
+  ApprovalAction,
   DiagnosticPreset,
+  MessagePart,
   Message,
   PendingApproval,
   ServerEvent,
   SessionSummary,
   SshCheckResponse,
-  SshTarget
+  SshTarget,
+  ToolPartData
 } from "./types";
 
 export type SseStatus = "connecting" | "connected" | "disconnected" | "error";
@@ -17,6 +20,34 @@ export type TimelineEntry = {
   title: string;
   text: string;
   createdAtMs: number;
+};
+
+export type ChatItem = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  createdAtMs: number;
+  status?: string;
+  isFinal?: boolean;
+};
+
+export type ToolActivity = {
+  id: string;
+  status: string;
+  command: string;
+  title?: string;
+  stdout?: string;
+  stderr?: string;
+  output?: string;
+  exitCode?: number | null;
+  durationMs?: number;
+  requiresApproval?: boolean;
+  createdAtMs: number;
+};
+
+export type ExecutionStatus = {
+  state: "idle" | "running" | "waiting" | "error";
+  label: string;
 };
 
 export type AppState = {
@@ -32,7 +63,9 @@ export type AppState = {
   pendingApprovals: PendingApproval[];
   audit: AuditEntry[];
   timeline: TimelineEntry[];
-  approvalActions: Array<"approve_once" | "reject">;
+  chatItems: ChatItem[];
+  toolActivities: ToolActivity[];
+  approvalActions: ApprovalAction[];
 };
 
 export const initialAppState: AppState = {
@@ -46,7 +79,9 @@ export const initialAppState: AppState = {
   pendingApprovals: [],
   audit: [],
   timeline: [],
-  approvalActions: ["approve_once", "reject"]
+  chatItems: [],
+  toolActivities: [],
+  approvalActions: ["approve_once", "approve_session", "reject_stop"]
 };
 
 export const fallbackDiagnosticPresets: DiagnosticPreset[] = [
@@ -94,17 +129,78 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
         })
       };
     }
-    case "message.updated":
-    case "message.part.updated": {
+    case "message.updated": {
       const payload = objectPayload(event.payload);
       const role = stringField(payload, "role", "");
       if (role === "user" || role === "assistant") {
+        const text = messageText(payload, event.payload);
+        if (!text.trim()) {
+          return state;
+        }
         return {
           ...state,
+          chatItems: upsertChatItem(state.chatItems, {
+            id: messageId(payload, role, text),
+            role,
+            text,
+            createdAtMs: numberField(payload, "created_at_ms", numberField(payload, "createdAtMs", Date.now())),
+            status: stringField(payload, "status", undefined),
+            isFinal: role === "assistant" && isFinalAssistantPayload(payload, text) ? true : undefined
+          }),
           timeline: prependTimeline(state.timeline, {
             kind: role === "user" ? "user-message" : "assistant-message",
             title: role === "user" ? "You" : "Assistant",
-            text: messageText(payload, event.payload)
+            text
+          })
+        };
+      }
+
+      return {
+        ...state,
+        timeline: prependTimeline(state.timeline, {
+          kind: "message",
+          title: event.type,
+          text: stringifyPayload(event.payload)
+        })
+      };
+    }
+    case "message.part.updated": {
+      const payload = objectPayload(event.payload);
+      const part = messagePartField(payload, "part");
+      if (part?.kind === "tool") {
+        const activity = toolActivityFromPart(part);
+        return {
+          ...state,
+          toolActivities: upsertToolActivity(state.toolActivities, activity),
+          timeline: upsertTimeline(state.timeline, {
+            id: part.id,
+            kind: "tool",
+            title: toolPartTitle(part),
+            text: toolPartText(part)
+          })
+        };
+      }
+
+      const role = stringField(payload, "role", "");
+      if (role === "user" || role === "assistant") {
+        const text = messageText(payload, event.payload);
+        if (!text.trim()) {
+          return state;
+        }
+        return {
+          ...state,
+          chatItems: upsertChatItem(state.chatItems, {
+            id: messageId(payload, role, text),
+            role,
+            text,
+            createdAtMs: numberField(payload, "created_at_ms", numberField(payload, "createdAtMs", Date.now())),
+            status: stringField(payload, "status", undefined),
+            isFinal: role === "assistant" && isFinalAssistantPayload(payload, text) ? true : undefined
+          }),
+          timeline: prependTimeline(state.timeline, {
+            kind: role === "user" ? "user-message" : "assistant-message",
+            title: role === "user" ? "You" : "Assistant",
+            text
           })
         };
       }
@@ -122,8 +218,10 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
     case "tool.completed":
     case "tool.failed": {
       const payload = objectPayload(event.payload);
+      const activity = toolActivityFromLegacyEvent(state.toolActivities, event.type, payload);
       return {
         ...state,
+        toolActivities: upsertToolActivity(state.toolActivities, activity),
         timeline: prependTimeline(state.timeline, {
           kind: "tool",
           title: event.type.replace(".", " "),
@@ -135,8 +233,10 @@ export function reduceEvent(state: AppState, event: ServerEvent): AppState {
     case "tool.stderr": {
       const payload = objectPayload(event.payload);
       const kind = event.type === "tool.stdout" ? "stdout" : "stderr";
+      const activity = toolActivityFromLegacyEvent(state.toolActivities, event.type, payload);
       return {
         ...state,
+        toolActivities: upsertToolActivity(state.toolActivities, activity),
         timeline: prependTimeline(state.timeline, {
           kind,
           title: kind,
@@ -196,9 +296,67 @@ export function withSseStatus(state: AppState, sse: SseStatus): AppState {
   };
 }
 
+export function selectChatItems(state: AppState): ChatItem[] {
+  return [...state.chatItems].sort((left, right) => left.createdAtMs - right.createdAtMs);
+}
+
+export function selectFinalAnswer(state: AppState): ChatItem | undefined {
+  return [...selectChatItems(state)]
+    .reverse()
+    .find((item) => item.role === "assistant" && item.isFinal === true && item.text.trim().length > 0);
+}
+
+export function selectToolActivities(state: AppState): ToolActivity[] {
+  return state.toolActivities;
+}
+
+export function selectExecutionStatus(state: AppState, busy: string | null): ExecutionStatus {
+  if (state.connection.sse === "error" || state.connection.sse === "disconnected") {
+    return { state: "error", label: "连接中断" };
+  }
+
+  if (state.pendingApprovals.length > 0) {
+    return { state: "waiting", label: "等待授权" };
+  }
+
+  if (busy === "agent" || state.toolActivities.some((activity) => isRunningToolActivity(activity))) {
+    return { state: "running", label: "执行中" };
+  }
+
+  return { state: "idle", label: "空闲" };
+}
+
+export function buildFinalAnswerReport(state: AppState): string {
+  return selectFinalAnswer(state)?.text ?? "";
+}
+
 function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
   const existing = items.filter((candidate) => candidate.id !== item.id);
   return [item, ...existing];
+}
+
+function upsertChatItem(items: ChatItem[], item: ChatItem): ChatItem[] {
+  const existing = items.filter((candidate) => candidate.id !== item.id && !sameChatContent(candidate, item));
+  return [...existing, item];
+}
+
+function sameChatContent(left: ChatItem, right: ChatItem): boolean {
+  return left.role === right.role && left.text.trim() === right.text.trim();
+}
+
+function upsertToolActivity(items: ToolActivity[], item: ToolActivity): ToolActivity[] {
+  const existing = items.find((candidate) => candidate.id === item.id);
+  const withoutExisting = items.filter((candidate) => candidate.id !== item.id);
+  return [
+    {
+      ...existing,
+      ...item,
+      stdout: appendStreamText(existing?.stdout, item.stdout),
+      stderr: appendStreamText(existing?.stderr, item.stderr),
+      createdAtMs: existing?.createdAtMs ?? item.createdAtMs
+    },
+    ...withoutExisting
+  ];
 }
 
 function prependTimeline(items: TimelineEntry[], input: Omit<TimelineEntry, "id" | "createdAtMs">): TimelineEntry[] {
@@ -215,6 +373,18 @@ function prependTimeline(items: TimelineEntry[], input: Omit<TimelineEntry, "id"
       ...input
     },
     ...deduped
+  ].slice(0, 80);
+}
+
+function upsertTimeline(items: TimelineEntry[], input: Omit<TimelineEntry, "createdAtMs">): TimelineEntry[] {
+  const existing = items.find((item) => item.id === input.id);
+  const withoutExisting = items.filter((item) => item.id !== input.id);
+  return [
+    {
+      createdAtMs: existing?.createdAtMs ?? Date.now(),
+      ...input
+    },
+    ...withoutExisting
   ].slice(0, 80);
 }
 
@@ -259,9 +429,33 @@ function objectPayload(payload: unknown): Record<string, unknown> {
   return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
 }
 
-function stringField(payload: Record<string, unknown>, field: string, fallback: string): string {
+function stringField<T extends string | undefined>(payload: Record<string, unknown>, field: string, fallback: T): string | T {
   const value = payload[field];
   return typeof value === "string" ? value : fallback;
+}
+
+function numberField(payload: Record<string, unknown>, field: string, fallback: number): number {
+  const value = payload[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function messagePartField(payload: Record<string, unknown>, field: string): MessagePart | undefined {
+  const value = payload[field];
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  const part = value as Record<string, unknown>;
+  if (typeof part.id !== "string" || typeof part.kind !== "string") {
+    return undefined;
+  }
+
+  return {
+    id: part.id,
+    kind: part.kind,
+    text: typeof part.text === "string" ? part.text : undefined,
+    data: part.data
+  };
 }
 
 function stringifyPayload(payload: unknown): string {
@@ -294,7 +488,11 @@ function messageText(payload: Record<string, unknown>, fallbackPayload: unknown)
         if (typeof part !== "object" || part === null) {
           return "";
         }
-        const value = (part as Record<string, unknown>).text;
+        const partPayload = part as Record<string, unknown>;
+        if (partPayload.kind === "tool") {
+          return "";
+        }
+        const value = partPayload.text;
         return typeof value === "string" ? value : "";
       })
       .filter(Boolean)
@@ -302,7 +500,161 @@ function messageText(payload: Record<string, unknown>, fallbackPayload: unknown)
     if (joined) {
       return joined;
     }
+    return "";
   }
 
   return stringifyPayload(fallbackPayload);
+}
+
+function messageId(payload: Record<string, unknown>, role: "user" | "assistant", text: string): string {
+  return stringField(payload, "id", stringField(payload, "message_id", `${role}:${text}`));
+}
+
+function isFinalAssistantPayload(payload: Record<string, unknown>, text: string): boolean {
+  if (!text.trim()) {
+    return false;
+  }
+
+  const status = stringField(payload, "status", "");
+  if (status === "waiting_for_approval" || status === "awaiting_approval" || status === "pending_approval") {
+    return false;
+  }
+
+  return true;
+}
+
+function isRunningToolActivity(activity: ToolActivity): boolean {
+  return ["running", "started", "pending", "queued", "in_progress"].includes(activity.status.toLowerCase());
+}
+
+function toolActivityFromPart(part: MessagePart): ToolActivity {
+  const data = toolData(part.data);
+  return {
+    id: part.id,
+    status: data.status ?? "updated",
+    command: data.command ?? data.tool ?? "",
+    title: data.title,
+    stdout: data.stdout,
+    stderr: data.stderr,
+    output: valueText(data.output),
+    exitCode: data.exit_code,
+    durationMs: data.duration_ms,
+    requiresApproval: data.requires_approval,
+    createdAtMs: Date.now()
+  };
+}
+
+function toolActivityFromLegacyEvent(
+  existing: ToolActivity[],
+  eventType: ServerEvent["type"],
+  payload: Record<string, unknown>
+): ToolActivity {
+  const id = toolActivityId(existing, payload);
+  const current = existing.find((activity) => activity.id === id);
+  const command = stringField(payload, "command", current?.command ?? "");
+  const status = stringField(payload, "status", legacyToolStatus(eventType));
+  const text = stringField(payload, "text", "");
+
+  return {
+    id,
+    status,
+    command,
+    stdout: eventType === "tool.stdout" ? text : undefined,
+    stderr: eventType === "tool.stderr" ? text : undefined,
+    output: valueText(payload.output),
+    exitCode: nullableNumberField(payload, "exit_code", current?.exitCode),
+    durationMs: numberField(payload, "duration_ms", current?.durationMs ?? 0) || current?.durationMs,
+    requiresApproval: booleanField(payload, "requires_approval", current?.requiresApproval),
+    createdAtMs: Date.now()
+  };
+}
+
+function toolActivityId(existing: ToolActivity[], payload: Record<string, unknown>): string {
+  const id = stringField(payload, "id", "");
+  if (id) {
+    return id;
+  }
+
+  const command = stringField(payload, "command", "");
+  if (command) {
+    return `command:${command}`;
+  }
+
+  return existing[0]?.id ?? "tool";
+}
+
+function legacyToolStatus(eventType: ServerEvent["type"]): string {
+  switch (eventType) {
+    case "tool.started":
+      return "running";
+    case "tool.completed":
+      return "completed";
+    case "tool.failed":
+      return "failed";
+    default:
+      return "updated";
+  }
+}
+
+function appendStreamText(existing: string | undefined, next: string | undefined): string | undefined {
+  if (!next) {
+    return existing;
+  }
+  if (!existing) {
+    return next;
+  }
+  return `${existing}\n${next}`;
+}
+
+function nullableNumberField(
+  payload: Record<string, unknown>,
+  field: string,
+  fallback: number | null | undefined
+): number | null | undefined {
+  const value = payload[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function booleanField(
+  payload: Record<string, unknown>,
+  field: string,
+  fallback: boolean | undefined
+): boolean | undefined {
+  const value = payload[field];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function toolPartTitle(part: MessagePart): string {
+  const data = toolData(part.data);
+  return data.status ?? data.title ?? data.tool ?? "tool";
+}
+
+function toolPartText(part: MessagePart): string {
+  const data = toolData(part.data);
+  const lines = [
+    data.command,
+    data.status,
+    part.text ?? valueText(data.output),
+    data.stdout,
+    data.stderr
+  ];
+
+  const text = lines.filter((line): line is string => typeof line === "string" && line.length > 0).join("\n");
+  return text || stringifyPayload(part.data ?? part);
+}
+
+function toolData(data: unknown): ToolPartData {
+  return typeof data === "object" && data !== null ? (data as ToolPartData) : {};
+}
+
+function valueText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  return stringifyPayload(value);
 }

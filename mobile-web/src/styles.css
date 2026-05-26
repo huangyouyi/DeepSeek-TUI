@@ -17,6 +17,341 @@ body {
   min-width: 320px;
 }
 
+.product-entry {
+  min-height: 100vh;
+}
+
+.product-entry__banner {
+  left: 50%;
+  max-width: min(720px, calc(100vw - 24px));
+  position: fixed;
+  top: 12px;
+  transform: translateX(-50%);
+  width: max-content;
+  z-index: 50;
+}
+
+.product-settings {
+  align-items: center;
+  background: rgba(3, 7, 18, 0.72);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 14px;
+  position: fixed;
+  z-index: 60;
+}
+
+.product-settings__panel {
+  background: #111827;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+  color: #eef2ff;
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+  padding: 16px;
+  width: 100%;
+}
+
+.product-settings__form label {
+  color: #dce7ef;
+}
+
+.product-settings__status .status-pill,
+.product-settings__check .ssh-check-result {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.product-shell__scrim {
+  display: none;
+}
+
+.product-shell__sidebar {
+  transition: transform 180ms ease, visibility 180ms ease;
+}
+
+.product-shell__brand-meta,
+.product-shell__header-subtitle,
+.product-shell__conversation-title,
+.product-shell__conversation-time,
+.product-shell__settings-button strong,
+.product-shell__tool-title,
+.product-shell__workbench,
+.product-shell__chat-column,
+.product-shell__tool-activity-panel,
+.product-shell__execution-status,
+.product-shell__final-actions {
+  min-width: 0;
+}
+
+.product-shell__status-dot {
+  background: #22c55e;
+  border-radius: 999px;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+  display: inline-block;
+  height: 7px;
+  margin-right: 7px;
+  width: 7px;
+}
+
+.product-shell__menu-button,
+.product-shell__new-chat,
+.product-shell__settings-button,
+.product-shell__suggestion,
+.product-shell__diagnostic-button,
+.product-shell__conversation,
+.product-shell__control-button,
+.product-shell__composer button {
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.product-shell__menu-button:active,
+.product-shell__new-chat:active,
+.product-shell__settings-button:active,
+.product-shell__suggestion:active,
+.product-shell__diagnostic-button:active,
+.product-shell__conversation:active,
+.product-shell__control-button:active,
+.product-shell__composer button:active {
+  transform: scale(0.98);
+}
+
+.product-shell__diagnostics {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.product-shell__diagnostics-header,
+.product-shell__diagnostics-grid {
+  min-width: 0;
+}
+
+.product-shell__diagnostics-grid {
+  scrollbar-width: thin;
+}
+
+.product-shell__diagnostic-button {
+  align-content: center;
+  touch-action: manipulation;
+}
+
+.product-shell__diagnostic-button:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.55;
+}
+
+.product-shell__diagnostic-label {
+  color: #f8fafc;
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.product-shell__diagnostic-button small {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.product-shell__control-button:disabled,
+.product-shell__composer button:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.55;
+}
+
+.product-shell__welcome-target {
+  align-items: start;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  border-radius: 8px;
+  color: #dbeafe;
+  display: grid;
+  gap: 4px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 12px;
+}
+
+.product-shell__card-title {
+  color: #f8fafc;
+  font-size: 1rem;
+  line-height: 1.35;
+  margin: 10px 0 4px;
+}
+
+.product-shell__card-copy {
+  color: #fef3c7;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.product-shell__tool-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.product-shell__tool-card summary::after {
+  color: #94a3b8;
+  content: "+";
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.product-shell__tool-card[open] summary::after {
+  content: "-";
+}
+
+.product-shell__tool-title {
+  color: #94a3b8;
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 500;
+  margin-top: 3px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.product-shell__tool-summary {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.product-shell__tool-status {
+  align-self: flex-start;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  color: #cbd5e1;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  padding: 4px 8px;
+  white-space: normal;
+}
+
+.product-shell__tool-status--completed {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.28);
+  color: #bbf7d0;
+}
+
+.product-shell__tool-status--failed {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.32);
+  color: #fecaca;
+}
+
+.product-shell__tool-stream {
+  color: #cbd5e1;
+  padding-bottom: 12px;
+}
+
+.product-shell__tool-stream summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+  padding-inline: 14px;
+}
+
+.product-shell__tool-stream pre {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.product-shell__execution-status {
+  display: grid;
+  flex: 0 1 180px;
+  font-size: 0.78rem;
+  gap: 3px;
+  line-height: 1.35;
+}
+
+.product-shell__execution-status span {
+  color: #94a3b8;
+}
+
+.product-shell__execution-status--idle {
+  border-color: rgba(148, 163, 184, 0.2) !important;
+}
+
+.product-shell__execution-status--running {
+  border-color: rgba(96, 165, 250, 0.34) !important;
+  color: #dbeafe !important;
+}
+
+.product-shell__execution-status--waiting {
+  border-color: rgba(251, 191, 36, 0.44) !important;
+  color: #fef3c7 !important;
+}
+
+.product-shell__execution-status--error {
+  border-color: rgba(248, 113, 113, 0.48) !important;
+  color: #fecaca !important;
+}
+
+.product-shell__final-answer--sticky {
+  bottom: 0;
+  position: sticky;
+  z-index: 2;
+}
+
+.product-shell__final-actions,
+.product-shell__approval-actions {
+  min-width: 0;
+}
+
+.product-shell__final-actions button,
+.product-shell__approval-actions button {
+  white-space: normal;
+}
+
+.product-shell__message,
+.product-shell__final-answer,
+.product-shell__tool-card,
+.product-shell__approval,
+.product-shell__tool-activity-panel {
+  overflow-wrap: anywhere;
+}
+
+.product-shell__approval-details {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  min-width: 0;
+}
+
+.product-shell__approval-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.product-shell__approval-field > span {
+  color: #fde68a;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.product-shell__approval-field p {
+  color: #f8fafc;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-shell__approval-field--command code {
+  margin: 0;
+}
+
 button,
 input,
 textarea {
@@ -181,6 +516,16 @@ h2 {
   box-shadow: 0 4px 16px rgba(40, 95, 159, 0.1);
 }
 
+.product-chat-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.product-chat-panel > .section-heading {
+  margin: 0;
+  padding: 14px 14px 0;
+}
+
 .secondary-panel {
   background: #fbfcfd;
   box-shadow: none;
@@ -215,7 +560,7 @@ summary {
   color: #285f65;
   font-size: 0.82rem;
   font-weight: 700;
-  margin: -4px 0 10px;
+  margin: -4px 0 0;
 }
 
 .copy-status-error {
@@ -292,6 +637,109 @@ form {
   min-width: 92px;
 }
 
+.chat-view {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.chat-view__final-answer {
+  background: #eef8f4;
+  border: 1px solid #acd9c9;
+  border-radius: 8px;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.chat-view__final-label {
+  color: #275448;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.chat-view__final-text,
+.chat-view__message-text {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-view__copy-final,
+.chat-view__composer-submit {
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  font-weight: 800;
+  min-height: 42px;
+  padding: 9px 12px;
+}
+
+.chat-view__copy-final {
+  background: #287062;
+  justify-self: start;
+}
+
+.chat-view__messages {
+  display: grid;
+  gap: 10px;
+}
+
+.chat-view__empty,
+.tool-activity__empty {
+  color: #66727f;
+  font-size: 0.9rem;
+  padding: 4px 0;
+}
+
+.chat-view__message {
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  max-width: 92%;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.chat-view__bubble--user {
+  align-self: end;
+  background: #eaf2ff;
+  border: 1px solid #b8cbe2;
+  justify-self: end;
+}
+
+.chat-view__bubble--assistant {
+  align-self: start;
+  background: #f4faf7;
+  border: 1px solid #b7dfce;
+  justify-self: start;
+}
+
+.chat-view__message-label {
+  color: #53606d;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.chat-view__composer {
+  align-items: end;
+  border-top: 1px solid #dde3ea;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-top: 12px;
+}
+
+.chat-view__composer-input {
+  min-height: 68px;
+}
+
+.chat-view__composer-submit {
+  background: #285f9f;
+  min-width: 92px;
+}
+
 label {
   color: #38444f;
   display: grid;
@@ -345,20 +793,164 @@ button:disabled {
 
 .approval-list,
 .timeline-list,
-.audit-list {
+.audit-list,
+.tool-activity__list {
   display: grid;
   gap: 10px;
 }
 
 .approval-card,
 .timeline-entry,
-.audit-entry {
+.audit-entry,
+.tool-activity__row {
   border: 1px solid #d6dee7;
   border-radius: 8px;
   display: grid;
   gap: 9px;
   min-width: 0;
   padding: 11px;
+}
+
+.tool-activity__row {
+  background: #fbfcfd;
+}
+
+.tool-activity__meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.tool-activity__status,
+.tool-activity__exit-code,
+.tool-activity__duration,
+.tool-activity__approval {
+  background: #edf2f7;
+  border-radius: 999px;
+  color: #344250;
+  font-size: 0.73rem;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.tool-activity__status {
+  background: #eaf7f2;
+  color: #24584b;
+}
+
+.tool-activity__approval {
+  background: #fff3d8;
+  color: #6d4a00;
+}
+
+.tool-activity__title {
+  color: #18212b;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-activity__command {
+  background: #17212b;
+  border-radius: 6px;
+  color: #eef6ff;
+  display: block;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  padding: 9px;
+  white-space: pre-wrap;
+}
+
+.tool-activity__streams {
+  display: grid;
+  gap: 7px;
+}
+
+.tool-activity__details {
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  padding: 0;
+}
+
+.tool-activity__summary {
+  color: #42505d;
+  cursor: pointer;
+  font-size: 0.8rem;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.tool-activity__stream {
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 0 0 8px 8px;
+}
+
+.tool-activity__stream--stderr {
+  background: #feecef;
+  color: #661d28;
+}
+
+.product-shell__tool-activity-panel .tool-activity {
+  display: grid;
+  gap: 10px;
+}
+
+.product-shell__tool-activity-panel .tool-activity__empty {
+  color: #94a3b8;
+}
+
+.product-shell__tool-activity-panel .tool-activity__row {
+  background: rgba(15, 23, 42, 0.7);
+  border-color: rgba(148, 163, 184, 0.16);
+}
+
+.product-shell__tool-activity-panel .tool-activity__status,
+.product-shell__tool-activity-panel .tool-activity__exit-code,
+.product-shell__tool-activity-panel .tool-activity__duration,
+.product-shell__tool-activity-panel .tool-activity__approval {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+}
+
+.product-shell__tool-activity-panel .tool-activity__status {
+  background: rgba(20, 184, 166, 0.12);
+  color: #99f6e4;
+}
+
+.product-shell__tool-activity-panel .tool-activity__approval {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fde68a;
+}
+
+.product-shell__tool-activity-panel .tool-activity__title {
+  color: #e0f2fe;
+}
+
+.product-shell__tool-activity-panel .tool-activity__command {
+  background: rgba(2, 6, 23, 0.72);
+  color: #fde68a;
+}
+
+.product-shell__tool-activity-panel .tool-activity__details {
+  border-color: rgba(148, 163, 184, 0.16);
+}
+
+.product-shell__tool-activity-panel .tool-activity__summary {
+  color: #cbd5e1;
+}
+
+.product-shell__tool-activity-panel .tool-activity__stream {
+  background: #020617;
+  color: #cbd5e1;
+}
+
+.product-shell__tool-activity-panel .tool-activity__stream--stderr {
+  background: rgba(127, 29, 29, 0.34);
+  color: #fecaca;
 }
 
 .approval-card > div:first-child,
@@ -381,11 +973,41 @@ button:disabled {
 .approval-actions {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .approval-actions button {
   min-height: 44px;
+  overflow-wrap: anywhere;
+}
+
+.approval-card__details {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.approval-card__field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.approval-card__field > span {
+  color: #66727f;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.approval-card__field p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .approval-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 pre {
@@ -470,7 +1092,140 @@ strong {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 430px) {
+.product-entry__manual-report {
+  background: #101827;
+  border-color: #263445;
+  color: #e8eef7;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  margin: 0 12px 10px;
+  max-height: 220px;
+}
+
+@media (max-width: 720px) {
+  .product-shell {
+    display: block !important;
+    overflow-x: hidden;
+  }
+
+  .product-shell__workspace {
+    min-height: 100vh;
+    width: 100%;
+  }
+
+  .product-shell__sidebar {
+    bottom: 0;
+    left: 0;
+    max-width: min(84vw, 320px);
+    min-width: 0 !important;
+    position: fixed;
+    top: 0;
+    transform: translateX(0);
+    width: min(84vw, 320px) !important;
+    z-index: 45;
+  }
+
+  .product-shell__sidebar--closed {
+    transform: translateX(-105%);
+    visibility: hidden;
+  }
+
+  .product-shell__scrim {
+    background: rgba(3, 7, 18, 0.62);
+    border: 0;
+    display: block;
+    inset: 0;
+    padding: 0;
+    position: fixed;
+    z-index: 44;
+  }
+
+  .product-shell__header {
+    align-items: stretch !important;
+    flex-wrap: wrap;
+    gap: 10px !important;
+  }
+
+  .product-shell__header-title {
+    flex: 1 1 calc(100% - 86px) !important;
+    min-width: 0;
+  }
+
+  .product-shell__settings-button {
+    max-width: 100% !important;
+    width: 100%;
+  }
+
+  .product-shell__chat-scroll {
+    padding: 16px 10px !important;
+  }
+
+  .product-shell__workbench {
+    display: grid !important;
+    gap: 12px !important;
+    grid-template-columns: 1fr !important;
+    width: 100%;
+  }
+
+  .product-shell__chat-column,
+  .product-shell__tool-activity-panel {
+    width: 100%;
+  }
+
+  .product-shell__tool-activity-panel {
+    max-height: none !important;
+    padding: 12px !important;
+  }
+
+  .product-shell__panel-header,
+  .product-shell__tool-summary {
+    display: grid !important;
+    grid-template-columns: 1fr;
+  }
+
+  .product-shell__execution-status {
+    width: 100%;
+  }
+
+  .product-shell__thread {
+    width: 100%;
+  }
+
+  .product-shell__message {
+    max-width: 96% !important;
+  }
+
+  .product-shell__final-answer {
+    display: grid !important;
+    grid-template-columns: 1fr;
+  }
+
+  .product-shell__final-actions,
+  .product-shell__approval-actions {
+    display: grid !important;
+    grid-template-columns: 1fr;
+  }
+
+  .product-shell__composer {
+    display: grid !important;
+    grid-template-columns: 1fr;
+    padding: 12px !important;
+  }
+
+  .product-shell__composer textarea {
+    min-width: 0;
+  }
+
+  .product-shell__tool-card summary {
+    align-items: flex-start;
+  }
+
+  .product-shell__tool-status {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .app-shell {
     padding: 10px;
   }
@@ -483,6 +1238,7 @@ strong {
   .status-grid,
   .diagnostic-grid,
   .agent-form,
+  .chat-view__composer,
   .access-token-form,
   .ssh-check-row,
   .target-form {
