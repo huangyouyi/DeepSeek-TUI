@@ -5,7 +5,9 @@ import {
   buildEventUrl,
   checkSshTarget,
   createSession,
+  deleteSession,
   getDiagnosticPresets,
+  listSessions,
   listMessages,
   prepareCommand,
   rejectCommand,
@@ -13,6 +15,7 @@ import {
   runDiagnostic,
   sendAgentTurn,
   stopAgentTurn,
+  updateSessionTitle,
   updateSshTarget
 } from "./api";
 
@@ -22,10 +25,21 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function findRequest(fetchMock: ReturnType<typeof vi.fn>, path: string): RequestInit {
+  const request = fetchMock.mock.calls.find(([url]) => url === path)?.[1];
+  if (!request) {
+    throw new Error(`Expected request to ${path}`);
+  }
+  return request;
+}
+
 describe("api client", () => {
   it("uses shared contract routes and payload field names", async () => {
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce(
+        jsonResponse([{ id: "session-1", title: "Mobile SSH", created_at_ms: 1, updated_at_ms: 1 }])
+      )
       .mockResolvedValueOnce(jsonResponse({ id: "session-1", title: "Mobile SSH" }))
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse({ status: "queued" }))
@@ -40,6 +54,7 @@ describe("api client", () => {
 
     const api = { fetch: fetchMock as unknown as typeof fetch };
 
+    await listSessions(api);
     await createSession(api);
     await listMessages("session-1", api);
     await runDiagnostic({ sessionId: "session-1", diagnostic: "system_info" }, api);
@@ -54,6 +69,7 @@ describe("api client", () => {
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/sessions",
+      "/api/sessions",
       "/api/sessions/session-1/messages",
       "/api/diagnostics/run",
       "/api/commands/prepare",
@@ -66,38 +82,90 @@ describe("api client", () => {
       "/api/sessions/session-1/agent-turn"
     ]);
 
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+    expect(JSON.parse(findRequest(fetchMock, "/api/diagnostics/run").body as string)).toEqual({
       session_id: "session-1",
       diagnostic: "system_info"
     });
-    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({
+    expect(JSON.parse(findRequest(fetchMock, "/api/commands/prepare").body as string)).toEqual({
       session_id: "session-1",
       command: "uptime",
       cwd: "/tmp"
     });
-    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({
+    expect(JSON.parse(findRequest(fetchMock, "/api/approvals/approval-1/respond").body as string)).toEqual({
       response: "approve_once"
     });
-    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({
+    expect(JSON.parse(findRequest(fetchMock, "/api/approvals/approval-2/respond").body as string)).toEqual({
       response: "approve_session"
     });
-    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({
+    expect(JSON.parse(findRequest(fetchMock, "/api/approvals/approval-3/respond").body as string)).toEqual({
       response: "reject_stop"
     });
-    expect(JSON.parse(fetchMock.mock.calls[7][1].body)).toEqual({
+    expect(JSON.parse(findRequest(fetchMock, "/api/approvals/approval-4/respond").body as string)).toEqual({
       response: "reject_stop"
     });
-    expect(fetchMock.mock.calls[8][1].method).toBe("PUT");
-    expect(JSON.parse(fetchMock.mock.calls[8][1].body)).toEqual({
+    expect(findRequest(fetchMock, "/api/ssh/target").method).toBe("PUT");
+    expect(JSON.parse(findRequest(fetchMock, "/api/ssh/target").body as string)).toEqual({
       host: "192.168.30.244",
       user: "root",
       port: 2222
     });
-    expect(fetchMock.mock.calls[9][1].method).toBe("POST");
-    expect(fetchMock.mock.calls[10][1].method).toBe("POST");
-    expect(JSON.parse(fetchMock.mock.calls[10][1].body)).toEqual({
+    expect(findRequest(fetchMock, "/api/ssh/check").method).toBe("POST");
+    expect(findRequest(fetchMock, "/api/sessions/session-1/agent-turn").method).toBe("POST");
+    expect(JSON.parse(findRequest(fetchMock, "/api/sessions/session-1/agent-turn").body as string)).toEqual({
       message: "请问当前运行在什么系统？"
     });
+  });
+
+  it("updates a session title with PATCH", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "session-1", title: "Renamed", created_at_ms: 1, updated_at_ms: 2 })
+      );
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    await expect(updateSessionTitle("session-1", "Renamed", api)).resolves.toEqual({
+      id: "session-1",
+      title: "Renamed",
+      created_at_ms: 1,
+      updated_at_ms: 2
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session-1", {
+      method: "PATCH",
+      body: JSON.stringify({ title: "Renamed" }),
+      headers: {
+        "content-type": "application/json"
+      }
+    });
+  });
+
+  it("deletes a session with DELETE", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = { fetch: fetchMock as unknown as typeof fetch };
+
+    await expect(deleteSession("session-1", api)).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session-1", {
+      method: "DELETE",
+      headers: {}
+    });
+  });
+
+  it("redacts access tokens from delete error messages", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "token phone-token rejected" }), {
+        status: 500,
+        statusText: "Internal Server Error",
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const api = {
+      fetch: fetchMock as unknown as typeof fetch,
+      accessToken: "phone-token"
+    };
+
+    await expect(deleteSession("session-1", api)).rejects.toThrow("token [access token] rejected");
   });
 
   it("loads diagnostic presets from the server", async () => {

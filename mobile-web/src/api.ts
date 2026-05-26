@@ -59,6 +59,29 @@ async function requestJson<T>(path: string, init: RequestInit = {}, api: ApiCont
   return (await response.json()) as T;
 }
 
+async function requestEmpty(path: string, init: RequestInit = {}, api: ApiContext = defaultApi): Promise<void> {
+  const accessToken = resolveAccessToken(api);
+  const response = await api.fetch(path, {
+    ...init,
+    headers: {
+      ...(init.body ? { "content-type": "application/json" } : {}),
+      ...(accessToken ? { "X-Mobile-Web-Token": accessToken } : {}),
+      ...init.headers
+    }
+  });
+
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const body = (await response.json()) as { message?: string };
+      message = body.message ?? message;
+    } catch {
+      // Keep the HTTP status fallback.
+    }
+    throw new Error(redactAccessToken(message, accessToken));
+  }
+}
+
 export function buildEventUrl(accessToken = getStoredAccessToken()): string {
   const token = normalizeAccessToken(accessToken);
   if (!token) {
@@ -135,6 +158,18 @@ export function createSession(api?: ApiContext): Promise<SessionSummary> {
 
 export function listMessages(sessionId: string, api?: ApiContext): Promise<Message[]> {
   return requestJson<Message[]>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, undefined, api);
+}
+
+export function updateSessionTitle(sessionId: string, title: string, api?: ApiContext): Promise<SessionSummary> {
+  return requestJson<SessionSummary>(
+    `/api/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "PATCH", body: JSON.stringify({ title }) },
+    api
+  );
+}
+
+export function deleteSession(sessionId: string, api?: ApiContext): Promise<void> {
+  return requestEmpty(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }, api);
 }
 
 export function getDiagnosticPresets(api?: ApiContext): Promise<DiagnosticPreset[]> {
