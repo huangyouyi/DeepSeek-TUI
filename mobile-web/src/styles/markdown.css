@@ -1,0 +1,33 @@
+.markdown-body {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: inherit;
+}
+
+.markdown-body pre,
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.markdown-body pre {
+  background: rgba(15, 23, 42, 0.7);
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  overflow: auto;
+}
+
+.markdown-body code {
+  background: rgba(148, 163, 184, 0.2);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+}
+
+.markdown-body ul {
+  list-style: disc;
+  margin-left: 1.5rem;
+}
+
+.markdown-body ol {
+  list-style: decimal;
+  margin-left: 1.5rem;
+}

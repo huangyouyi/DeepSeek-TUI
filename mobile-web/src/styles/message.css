@@ -1,0 +1,53 @@
+.use-code::before {
+  content: '$';
+}
+
+.markdown-body pre,
+.markdown-body code,
+pre,
+code {
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal;
+  max-width: 100%;
+}
+
+pre {
+  overflow-x: auto;
+}
+
+.streaming-text {
+  position: relative;
+  animation: stream-fade var(--stream-duration, 0.35s) ease-out;
+}
+
+.streaming-text::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  top: 0.25em;
+  width: 2px;
+  height: 1em;
+  background: rgba(255, 255, 255, 0.6);
+  animation: blink-caret 1s steps(1) infinite;
+}
+
+@keyframes blink-caret {
+  0%, 50% {
+    opacity: 1;
+  }
+  50.1%, 100% {
+    opacity: 0;
+  }
+}
+
+@keyframes stream-fade {
+  from {
+    opacity: 0.25;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
