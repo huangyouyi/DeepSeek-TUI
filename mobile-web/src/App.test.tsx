@@ -191,15 +191,22 @@ describe("App opencode web integration", () => {
     vi.useRealTimers();
   });
 
-  it("/web calls GET /api/sessions on load without eagerly creating a session", async () => {
+  it("/web renders the formal chat shell without the old separate tool activity panel", async () => {
     const fetchMock = createFetchHarness({ sessions: [] });
 
     render(<App />);
 
     await screen.findByText("暂无对话");
+    expect(screen.getByRole("banner").textContent).toContain("DeepSeek 远程 Linux");
+    expect(screen.getByRole("region", { name: "远程 Linux 对话工作区" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "消息输入区" })).toBeTruthy();
+    expect(screen.getByPlaceholderText("输入消息...")).toBeTruthy();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/sessions", { headers: {} }));
     expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/sessions" && init?.method === "POST")).toBe(false);
+    expect(screen.queryByRole("region", { name: "Tool activity" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "工具活动" })).toBeNull();
     expect(screen.queryByText("Tool Activity")).toBeNull();
+    expect(screen.queryByText("工具活动")).toBeNull();
   });
 
   it("first send without an active session creates a titled session and sends the agent turn", async () => {
@@ -464,15 +471,18 @@ describe("App opencode web integration", () => {
     await waitFor(() => expect(screen.queryByText("agent offline")).toBeNull(), { timeout: 5200 });
   }, 6500);
 
-  it("/debug still exposes diagnostics, raw timeline, and manual command affordances", async () => {
+  it("/debug still exposes raw diagnostics and testing affordances", async () => {
     window.history.replaceState({}, "", "/debug");
     createFetchHarness();
 
     render(<App />);
 
+    expect(await screen.findByText("Linux Web Control")).toBeTruthy();
     expect(await screen.findByText("Raw Timeline")).toBeTruthy();
     expect(screen.getAllByText("Diagnostics").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Advanced Command").length).toBeGreaterThan(0);
+    expect(screen.getByText("Pending Approvals")).toBeTruthy();
+    expect(screen.getByText("Tool Activity")).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "会话列表" })).toBeNull();
   });
 });
