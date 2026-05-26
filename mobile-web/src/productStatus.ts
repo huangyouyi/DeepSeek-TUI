@@ -25,7 +25,7 @@ export function formatSessionTime(value: number): string {
     return "No activity yet";
   }
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
