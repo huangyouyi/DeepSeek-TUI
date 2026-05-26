@@ -12,7 +12,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "dompurify": "^3.4.5",
     "lucide-react": "^1.16.0",
-    "marked": "^18.0.4",
+    "marked": "^15.0.12",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sonner": "^2.0.7",
