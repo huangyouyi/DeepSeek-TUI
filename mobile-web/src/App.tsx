@@ -107,6 +107,15 @@ export default function App() {
   }, [route]);
 
   useEffect(() => {
+    if (isDebugRoute || !error) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setError(null), 4200);
+    return () => window.clearTimeout(timeout);
+  }, [error, isDebugRoute]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function load() {
@@ -505,7 +514,6 @@ export default function App() {
       await productSessions.reloadMessages(activeSessionId).catch(() => undefined);
     } catch (err) {
       setError(messageFromError(err));
-      throw err;
     } finally {
       setBusy(null);
     }
@@ -668,7 +676,7 @@ export default function App() {
               {executionStatus.label}
             </div>
             <section className="opencode-product-main" aria-label="远程 Linux 对话工作区">
-              {!activeProductSessionId && productTimeline.length === 0 ? (
+              {productTimeline.length === 0 ? (
                 <OpencodeWelcomePage onSuggestedQuestion={(question) => void handleProductSend(question)} />
               ) : (
                 <div className="opencode-product-timeline" aria-live="polite">

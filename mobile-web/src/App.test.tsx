@@ -38,6 +38,7 @@ type HarnessOptions = {
   sessions?: Session[];
   messages?: Record<string, unknown[]>;
   agentResponse?: unknown;
+  failAgentTurn?: boolean;
 };
 
 function createFetchHarness(options: HarnessOptions = {}) {
@@ -137,6 +138,9 @@ function createFetchHarness(options: HarnessOptions = {}) {
 
     const agentMatch = url.match(/^\/api\/sessions\/([^/]+)\/agent-turn$/);
     if (agentMatch && method === "POST") {
+      if (options.failAgentTurn) {
+        return jsonResponse({ message: "agent offline" }, { status: 503, statusText: "Service Unavailable" });
+      }
       return jsonResponse({ ...(agentResponse as object), session_id: decodeURIComponent(agentMatch[1]) });
     }
 
@@ -184,6 +188,7 @@ describe("App opencode web integration", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("/web calls GET /api/sessions on load without eagerly creating a session", async () => {
@@ -238,6 +243,18 @@ describe("App opencode web integration", () => {
 
     await screen.findByText("loaded session two");
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session-2/messages", { headers: {} }));
+  });
+
+  it("shows the welcome page for an active conversation with an empty timeline", async () => {
+    createFetchHarness({
+      sessions: [{ id: "session-1", title: "Empty", created_at_ms: 1, updated_at_ms: 1 }],
+      messages: { "session-1": [] }
+    });
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("欢迎页")).toBeTruthy();
+    expect(screen.getByText("从一个诊断问题开始")).toBeTruthy();
   });
 
   it("sidebar new and delete conversations call the session APIs", async () => {
@@ -392,6 +409,23 @@ describe("App opencode web integration", () => {
     expect(registered).toContain("agent.tool.completed");
     expect(registered).toContain("agent.tool.failed");
   });
+
+  it("auto-dismisses web errors as transient toast feedback", async () => {
+    createFetchHarness({
+      sessions: [{ id: "session-1", title: "Router", created_at_ms: 1, updated_at_ms: 1 }],
+      failAgentTurn: true
+    });
+
+    render(<App />);
+
+    const composer = await screen.findByPlaceholderText("输入消息...");
+    fireEvent.change(composer, { target: { value: "trigger failure" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText("agent offline")).toBeTruthy();
+
+    await waitFor(() => expect(screen.queryByText("agent offline")).toBeNull(), { timeout: 5200 });
+  }, 6500);
 
   it("/debug still exposes diagnostics, raw timeline, and manual command affordances", async () => {
     window.history.replaceState({}, "", "/debug");
