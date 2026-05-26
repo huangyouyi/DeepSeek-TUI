@@ -130,7 +130,7 @@ export function buildConversationTitleHint(content: string): string {
     return normalized;
   }
 
-  return `${normalized.slice(0, 32)}...`;
+  return `${normalized.slice(0, 29)}...`;
 }
 
 export function mapApprovalToPermission(approval: PendingApproval): PermissionLike {

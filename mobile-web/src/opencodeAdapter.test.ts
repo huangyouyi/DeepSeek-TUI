@@ -21,7 +21,7 @@ describe("opencodeAdapter", () => {
   it("builds first-message title hints", () => {
     expect(buildConversationTitleHint("### 检查网络\n第二行")).toBe("检查网络");
     expect(buildConversationTitleHint("  ##   spaced    heading   \nnext")).toBe("spaced heading");
-    expect(buildConversationTitleHint("a".repeat(40))).toBe(`${"a".repeat(32)}...`);
+    expect(buildConversationTitleHint("a".repeat(40))).toBe(`${"a".repeat(29)}...`);
   });
 
   it("maps pending approvals to permission cards", () => {
