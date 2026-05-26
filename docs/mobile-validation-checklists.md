@@ -177,6 +177,12 @@ Expected result:
 
 - `/health`, `/event`, `/api/ssh/target`, `/api/sessions`, and
   `/api/audit/recent` respond.
+- `/web` is the formal chat UI and `/debug` is the raw test/diagnostics UI.
+- Tools and approvals render inline in the chat timeline on `/web`; raw
+  timeline, audit, diagnostics, and manual test surfaces remain available on
+  `/debug`.
+- The browser remains a thin client: it renders server state and sends user
+  intents only. The Rust server controls remote execution and approval policy.
 - `/api/ssh/check` reports target reachability without an approval prompt.
 - A preset diagnostic executes over SSH.
 - An advanced command can be rejected without execution.
@@ -185,9 +191,11 @@ Expected result:
   execute after approval, and display a final assistant response.
 - Audit output does not expose known token-like sentinel fields.
 
-This does not prove SwiftUI, Xcode, iOS simulator/device, Keychain, iOS local
-network permission, macOS, Windows, real LAN runner pairing, package install,
-browser automation, or production sandbox behavior.
+This remains Linux/LAN Web evidence unless manual user-run testing proves more
+in a separate accepted evidence bundle. It does not prove SwiftUI, Xcode, iOS
+simulator/device, Keychain, iOS local network permission, macOS, Windows, real
+LAN runner pairing, package install, browser automation, or production sandbox
+behavior.
 
 ## macOS Host Checklist
 
