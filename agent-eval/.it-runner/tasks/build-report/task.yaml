@@ -1,0 +1,6 @@
+version: "1"
+name: build-report
+description: "Build summary report from judge results"
+tags: ["eval", "report"]
+command: |
+  python3 "${EVAL_SCRIPTS_DIR}/build_report.py"

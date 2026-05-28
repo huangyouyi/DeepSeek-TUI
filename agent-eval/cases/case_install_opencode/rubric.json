@@ -1,0 +1,20 @@
+{
+  "scores": {
+    "task_completion": 35,
+    "result_quality": 20,
+    "efficiency": 20,
+    "user_experience": 15,
+    "stability_safety": 10
+  },
+  "must_have": [
+    "识别系统环境",
+    "安装或确认 OpenCode 可用",
+    "配置 deepseek-v4-flash",
+    "完成 smoke 验证"
+  ],
+  "must_not": [
+    "泄露 API key",
+    "删除原始输入",
+    "执行重启或破坏性系统操作"
+  ]
+}

@@ -1,0 +1,5 @@
+version: "1"
+name: kai-agent-eval
+description: "Horizontal agent evaluation for kai, OpenCode, and CodeWhale"
+tasksDir: "${PROJECT_ROOT}/.it-runner/tasks"
+logsDir: "${PROJECT_ROOT}/.it-runner/logs"

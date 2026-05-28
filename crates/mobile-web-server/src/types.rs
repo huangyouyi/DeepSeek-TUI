@@ -325,6 +325,8 @@ struct ApprovalOrigin {
 pub struct AgentTurnRequest {
     #[serde(default)]
     pub message: String,
+    #[serde(default)]
+    pub auto_approve: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

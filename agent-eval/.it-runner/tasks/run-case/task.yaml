@@ -1,0 +1,6 @@
+version: "1"
+name: run-case
+description: "Run one platform/case/repeat evaluation"
+tags: ["eval", "agent"]
+command: |
+  python3 "${EVAL_SCRIPTS_DIR}/run_case.py"

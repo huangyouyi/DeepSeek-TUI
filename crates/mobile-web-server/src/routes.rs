@@ -810,11 +810,13 @@ async fn agent_turn(
                 }
             }
             AgentToolDecision::RequireApproval(command) => {
-                if state.app.is_session_allowed(
-                    &session_id,
-                    &command.command,
-                    command.cwd.as_deref(),
-                ) {
+                if request.auto_approve
+                    || state.app.is_session_allowed(
+                        &session_id,
+                        &command.command,
+                        command.cwd.as_deref(),
+                    )
+                {
                     let part_id = format!("part-tool-{}", Uuid::new_v4());
                     let running_part = remote_shell_tool_part(RemoteShellToolPartInput {
                         id: part_id.clone(),
@@ -844,7 +846,11 @@ async fn agent_turn(
                         &turn_id,
                         &command.command,
                         command.cwd.as_deref(),
-                        RiskAssessment::high("server-side session approval grant"),
+                        RiskAssessment::high(if request.auto_approve {
+                            "server-side auto approval requested"
+                        } else {
+                            "server-side session approval grant"
+                        }),
                         false,
                     ) {
                         Ok(output) => {

@@ -1,0 +1,6 @@
+version: "1"
+name: normalize-result
+description: "Normalize raw platform output into summary.json"
+tags: ["eval", "normalize"]
+command: |
+  python3 "${EVAL_SCRIPTS_DIR}/normalize_result.py"

@@ -65,6 +65,7 @@ project_overhaul_prompt.md
 
 # Local runtime state
 .deepseek/
+.kai-test/
 **/session_*.json
 *.db
 
