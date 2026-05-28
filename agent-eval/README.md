@@ -12,9 +12,26 @@ Local `it-runner` project for comparing kai, OpenCode, and CodeWhale.
 - judge model: `deepseek-v4-pro`
 - kai auto approval: `KAI_AUTO_APPROVE=1`, sent as `auto_approve: true` to the kai mobile API
 
+## AgentFlow Runner
+
+When AgentFlow starts `it-runner-agentflow` without a project, the runtime can be registered while the task list remains empty. Start it from this directory with the runner config:
+
+```bash
+cd /home/cu/projects/DeepSeek-TUI/agent-eval
+
+AGENTFLOW_API_BASE=http://127.0.0.1:48285/api/internal/it-runner \
+AGENTFLOW_RUNNER_TOKEN_FILE=/home/cu/.agentflow/data/it-runner/host-token \
+AGENTFLOW_RUNTIME_FILE=/home/cu/.agentflow/data/it-runner/runtime.json \
+/home/cu/.agentflow/bin/it-runner-agentflow \
+  --mode agentflow \
+  --runner-config it-runner.yaml
+```
+
+If a project-less runner is already active, stop only that `it-runner-agentflow` process first, then start the command above. Do not use `/api` as `AGENTFLOW_API_BASE`; the runner host path is `/api/internal/it-runner`.
+
 ## Secret Setup
 
-Create `.it-runner/envs/080-secret-local.env`:
+Create `.it-runner/envs/080-secret-local.env` from `.it-runner/env-templates/080-secret-local.env.example`:
 
 ```env
 SECRET_DEEPSEEK_API_KEY=...
