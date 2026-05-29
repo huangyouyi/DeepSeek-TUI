@@ -11,5 +11,34 @@ workspace:
 
 processes:
   - name: "mobile-web-ai-server"
-    cmd: "make mobile-web-ai-server PORT=${MOBILE_WEB_AI_SERVER_PORT}"
+    cmd: |
+      bash -lc '
+        set -euo pipefail
+        port="$MOBILE_WEB_AI_SERVER_PORT"
+        if [ -z "$port" ]; then
+          port="8799"
+        fi
+        pids=$(ss -ltnp "sport = :$port" 2>/dev/null | sed -n "s/.*pid=\([0-9]\+\).*/\1/p" | sort -u)
+        if [ -n "$pids" ]; then
+          echo "Stopping existing mobile web server listener(s) on port $port: $pids"
+          kill $pids 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            sleep 0.2
+            alive=""
+            for pid in $pids; do
+              if kill -0 "$pid" 2>/dev/null; then
+                alive="$alive $pid"
+              fi
+            done
+            if [ -z "$alive" ]; then
+              break
+            fi
+          done
+          if [ -n "$alive" ]; then
+            echo "Force stopping lingering listener(s) on port $port:$alive"
+            kill -9 $alive 2>/dev/null || true
+          fi
+        fi
+        exec make mobile-web-ai-server PORT="$port"
+      '
     ports: [8799]
