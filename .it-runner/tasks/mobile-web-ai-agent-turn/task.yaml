@@ -1,0 +1,20 @@
+version: "1"
+name: mobile-web-ai-agent-turn
+description: "Send a mock mobile Web AI agent turn for an existing session"
+tags: ["mobile-web", "ai", "agent-turn", "smoke"]
+
+workspace:
+  workdir: "${PROJECT_ROOT}"
+
+env:
+  required:
+    - SESSION_ID
+
+run:
+  cmds:
+    - |
+      : "${SESSION_ID:?SESSION_ID is required}"
+      curl -s -X POST "http://127.0.0.1:8788/api/sessions/${SESSION_ID}/agent-turn" \
+        -H 'content-type: application/json' \
+        -d '{"message":"请问当前运行在什么系统？","model_mode":"mock"}' \
+        | jq
