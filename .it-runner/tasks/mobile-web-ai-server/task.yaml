@@ -2,5 +2,14 @@ version: "1"
 name: mobile-web-ai-server
 description: "Start the mobile Web AI server with the repository Makefile"
 tags: ["mobile-web", "ai", "server", "smoke"]
-command: |
-  make mobile-web-ai-server
+
+watch:
+  stateFile: "${PROJECT_ROOT}/.it-runner/states/mobile-web-ai-server.STATE"
+
+workspace:
+  workdir: "${PROJECT_ROOT}"
+
+processes:
+  - name: "mobile-web-ai-server"
+    cmd: "make mobile-web-ai-server PORT=${MOBILE_WEB_AI_SERVER_PORT}"
+    ports: [8799]
