@@ -1,0 +1,11 @@
+version: "1"
+name: mobile-web-health
+description: "Check the mobile Web server health endpoint"
+tags: ["mobile-web", "health", "smoke"]
+
+workspace:
+  workdir: "${PROJECT_ROOT}"
+
+run:
+  cmds:
+    - "curl -s http://127.0.0.1:8788/health | jq"
