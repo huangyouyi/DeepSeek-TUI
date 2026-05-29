@@ -3,4 +3,4 @@ name: mobile-web-ai-server
 description: "Start the mobile Web AI server with the repository Makefile"
 tags: ["mobile-web", "ai", "server", "smoke"]
 command: |
-  make -C "${PROJECT_ROOT}/.." mobile-web-ai-server
+  make mobile-web-ai-server

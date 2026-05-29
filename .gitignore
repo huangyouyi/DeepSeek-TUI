@@ -36,6 +36,8 @@ dist/
 # Logs
 *.log
 !docs/mobile-evidence-bundles/templates/*/commands.log
+.it-runner/logs/
+.it-runner/envs/
 
 # Generated
 outputs/

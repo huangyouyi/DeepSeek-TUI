@@ -1,0 +1,5 @@
+version: "1"
+name: deepseek-tui
+description: "DeepSeek TUI repository tasks"
+tasksDir: "${PROJECT_ROOT}/.it-runner/tasks"
+logsDir: "${PROJECT_ROOT}/.it-runner/logs"
