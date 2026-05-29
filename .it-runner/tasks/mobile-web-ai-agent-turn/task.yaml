@@ -6,10 +6,6 @@ tags: ["mobile-web", "ai", "agent-turn", "smoke"]
 workspace:
   workdir: "${PROJECT_ROOT}"
 
-env:
-  required:
-    - SESSION_ID
-
 run:
   cmds:
     - |
