@@ -8,7 +8,7 @@
   },
   "must_have": [
     "识别系统环境",
-    "安装或确认 OpenCode 可用",
+    "安装或确认 Codex CLI 可用",
     "配置 deepseek-v4-flash",
     "完成 smoke 验证"
   ],

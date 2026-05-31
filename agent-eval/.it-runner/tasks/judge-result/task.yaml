@@ -2,5 +2,9 @@ version: "1"
 name: judge-result
 description: "Judge one normalized result with DeepSeek V4 Pro"
 tags: ["eval", "judge"]
-command: |
-  python3 "${EVAL_SCRIPTS_DIR}/judge_result.py"
+workspace:
+  workdir: "${PROJECT_ROOT}"
+
+run:
+  cmds:
+    - python3 "${EVAL_SCRIPTS_DIR}/judge_result.py"

@@ -2,5 +2,9 @@ version: "1"
 name: run-suite
 description: "Run MVP matrix: 3 platforms x 3 cases x 3 repeats"
 tags: ["eval", "suite"]
-command: |
-  python3 "${EVAL_SCRIPTS_DIR}/run_suite.py"
+workspace:
+  workdir: "${PROJECT_ROOT}"
+
+run:
+  cmds:
+    - python3 "${EVAL_SCRIPTS_DIR}/run_suite.py"

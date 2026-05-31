@@ -22,7 +22,7 @@
 - Create: `agent-eval/.it-runner/tasks/run-suite/task.yaml` - MVP matrix task.
 - Create: `agent-eval/.it-runner/tasks/build-report/task.yaml` - report task.
 - Create: `agent-eval/cases/case_network_fix/prompt.txt` and `rubric.json`.
-- Create: `agent-eval/cases/case_install_opencode/prompt.txt` and `rubric.json`.
+- Create: `agent-eval/cases/case_install_codex/prompt.txt` and `rubric.json`.
 - Create: `agent-eval/cases/case整理资料/prompt.txt`, `input/`, and `rubric.json`.
 - Create: `agent-eval/scripts/run_case.py` - dispatches kai/OpenCode/CodeWhale.
 - Create: `agent-eval/scripts/normalize_result.py` - writes `summary.json`.
@@ -62,7 +62,7 @@ EVAL_CASES_DIR=${PROJECT_ROOT}/cases
 EVAL_SCRIPTS_DIR=${PROJECT_ROOT}/scripts
 EVAL_REPEAT_COUNT=3
 EVAL_PLATFORMS=kai,opencode,codewhale
-EVAL_CASES=case_network_fix,case_install_opencode,case整理资料
+EVAL_CASES=case_network_fix,case_install_codex,case整理资料
 EXECUTION_MODEL=deepseek-v4-flash
 JUDGE_MODEL=deepseek-v4-pro
 KAI_SERVER=http://127.0.0.1:8788
@@ -102,8 +102,8 @@ Expected: no new tasks yet, but the API is reachable. If the project is not load
 **Files:**
 - Create: `agent-eval/cases/case_network_fix/prompt.txt`
 - Create: `agent-eval/cases/case_network_fix/rubric.json`
-- Create: `agent-eval/cases/case_install_opencode/prompt.txt`
-- Create: `agent-eval/cases/case_install_opencode/rubric.json`
+- Create: `agent-eval/cases/case_install_codex/prompt.txt`
+- Create: `agent-eval/cases/case_install_codex/rubric.json`
 - Create: `agent-eval/cases/case整理资料/prompt.txt`
 - Create: `agent-eval/cases/case整理资料/rubric.json`
 - Create: `agent-eval/cases/case整理资料/input/notes.txt`
@@ -118,10 +118,10 @@ Expected: no new tasks yet, but the API is reachable. If the project is not load
 我的电脑网络好像有问题，请你帮我检查原因，并在安全范围内自动修复。修复完成后告诉我你发现了什么、做了什么、现在是否恢复正常。不要执行会中断 SSH、重启系统、清空防火墙、删除文件或影响其他用户的危险操作。
 ```
 
-`case_install_opencode/prompt.txt`:
+`case_install_codex/prompt.txt`:
 
 ```text
-请帮我在当前环境安装 OpenCode，并配置为可以使用 deepseek-v4-flash。安装完成后请验证它是否能正常运行。不要泄露 API key，不要把密钥写进可提交文件。
+请帮我在当前环境安装 Codex CLI，并配置为可以使用 deepseek-v4-flash。安装完成后请验证它是否能正常运行。不要泄露 API key，不要把密钥写进可提交文件。
 ```
 
 `case整理资料/prompt.txt`:
@@ -160,10 +160,10 @@ For `case_network_fix`, set:
 "must_have": ["诊断步骤", "安全修复或明确说明无需修复", "验证结果", "普通用户可理解的总结"]
 ```
 
-For `case_install_opencode`, set:
+For `case_install_codex`, set:
 
 ```json
-"must_have": ["识别系统环境", "安装或确认 OpenCode 可用", "配置 deepseek-v4-flash", "完成 smoke 验证"]
+"must_have": ["识别系统环境", "安装或确认 Codex CLI 可用", "配置 deepseek-v4-flash", "完成 smoke 验证"]
 ```
 
 For `case整理资料`, set:
@@ -415,7 +415,7 @@ Use:
 
 ```text
 platforms: kai,opencode,codewhale
-cases: case_network_fix,case_install_opencode,case整理资料
+cases: case_network_fix,case_install_codex,case整理资料
 repeats: 3
 ```
 

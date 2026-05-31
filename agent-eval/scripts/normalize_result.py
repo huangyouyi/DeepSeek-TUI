@@ -30,7 +30,10 @@ def read_json(path: Path) -> dict | list | None:
         end = text.rfind("}")
         if start >= 0 and end > start:
             text = text[start : end + 1]
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
 
 
 def final_from_kai(data: dict | None) -> str:
